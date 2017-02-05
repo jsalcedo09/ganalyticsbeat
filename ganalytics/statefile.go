@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -16,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/elastic/beats/libbeat/logp"
+	"io"
 )
 
 /*
@@ -180,13 +180,19 @@ func (s *StateFile) loadFromS3() error {
 		return err
 	}
 
+	defer resp.Body.Close()
+
+	buf := bytes.NewBuffer(nil)
+	if _, err := io.Copy(buf, resp.Body); err != nil {
+                return err
+        }
 	// File was successfully loaded.  Unmarshall into state attribute
 	var p Properties
-	if err := json.Unmarshal([]byte(fmt.Sprint(resp)), &p); err != nil {
+	if err := json.Unmarshal(buf.Bytes(), &p); err != nil {
 		s.lock.Unlock()
 		return err
 	}
-
+	
 	s.properties = p
 	s.lock.Unlock()
 
