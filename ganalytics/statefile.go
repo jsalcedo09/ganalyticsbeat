@@ -240,7 +240,7 @@ func (s *StateFile) Save() error {
 	if s.StorageType == "disk" {
 		err = s.saveToDisk()
 	} else if s.StorageType == "s3" {
-		err = s.saveToDisk()
+		err = s.saveToS3()
 	}
 	s.lock.Unlock()
 	if err != nil {
