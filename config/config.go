@@ -7,7 +7,6 @@ import "time"
 
 type Config struct {
 	Period 			  time.Duration    `config:"period"`
-	ZoneTag                   string           `config:"zone_tag"`
 	StateFileStorageType      string           `config:"state_file_storage_type"`
 	StateFileName             string           `config:"state_file_name"`
 	StateFilePath             string           `config:"state_file_path"`

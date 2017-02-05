@@ -60,7 +60,6 @@ func New(b *beat.Beat, cfg *common.Config) (beat.Beater, error) {
 	sfConf := map[string]string{
 		"filename":     config.StateFileName,
 		"filepath":     config.StateFilePath,
-		"zone_tag":     config.ZoneTag,
 		"storage_type": config.StateFileStorageType,
 	}
 

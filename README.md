@@ -7,9 +7,62 @@ Ensure that this folder is at the following location:
 
 ## Getting Started with Ganalyticsbeat
 
+### Thanks
+
+Special thanks to [Cloudflare Beat](https://github.com/hartfordfive/cloudflarebeat) that worked as inspiration.
+
 ### Requirements
 
 * [Golang](https://golang.org/dl/) 1.7
+
+### Google Analytics Beat specific configuration options
+
+- `ganalyticsbeat.period` : The period at which the google analytics metrics will be fetched.  
+- `ganalyticsbeat.view_id` :(mandatory) The View ID of the Google Analytics View 
+- `ganalyticsbeat.initial_date` : (mandatory) The starting date for Google Analytics Data in format `YYYY-MM-DD`
+- `ganalyticsbeat.metrics` : (mandatory) The metrics list in comma separated values  `ga:sessions,ga:users,ga:pageviews,ga:bounceRate` 
+- `ganalyticsbeat.state_file_storage_type` : The type of storage for the state file, either `disk` or `s3`, which keeps track of the current progress. (Default: disk)
+- `ganalyticsbeat.state_file_path` : The path in which the state file will be saved (applicable only with `disk` storage type)
+- `ganalyticsbeat.state_file_name` : The name of the state file
+- `ganalyticsbeat.aws_access_key` : The user AWS access key, if S3 storage selected.
+- `ganalyticsbeat.aws_secret_access_key` : The user AWS secret access key, if S3 storage selected.
+- `ganalyticsbeat.aws_s3_bucket_name` : The name of the S3 bucket where the state file will be stored
+- `ganalyticsbeat.google_credentials` : JSON as a string with Google Credentials tokens
+- `ganalyticsbeat.google_secrets` : JSON as a string with Google Secrets on the [Google API Console](https://console.developers.google.com/)
+
+### Using S3 Storage for state file
+
+For ganalyticsbeat, it's probably best to create a seperate IAM user account, without a password and only this sample policy file.  Best to limit the access of your user as a security practice.
+
+Below is a sample of what the policy file would look like for the S3 storage.  Please note you should replace `my-ganalyticsbeat-bucket-name` with your bucket name that you've created in S3.
+
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:ListBucket"
+            ],
+            "Resource": [
+                "arn:aws:s3:::my-ganalyticsbeat-bucket-name"
+            ]
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject",
+                "s3:GetObject",
+                "s3:DeleteObject"
+            ],
+            "Resource": [
+                "arn:aws:s3:::my-ganalyticsbeat-bucket-name/*"
+            ]
+        }
+    ]
+}
+```
 
 ### Init Project
 To get running with Ganalyticsbeat and also install the

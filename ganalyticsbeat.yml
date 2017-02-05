@@ -5,7 +5,6 @@
 ganalyticsbeat:
   # Defines how often an event is sent to the output
   period: 1m
-  zone_tag: ${ZONE_TAG:zone1}
   state_file_path: ${STATE_FILE_PATH:""}
   initial_date: ${INITIAL_DATE}
   view_id: ${VIEW_ID}

@@ -27,7 +27,6 @@ const (
 type StateFile struct {
 	FileName    string
 	FilePath    string
-	ZoneName    string
 	StorageType string
 	properties  Properties
 	lastUpdated time.Time
@@ -75,11 +74,7 @@ func NewStateFile(config map[string]string) (*StateFile, error) {
 		sf.FilePath = config["filepath"]
 	}
 
-	if _, ok := config["zone_tag"]; !ok {
-		return nil, errors.New("Must specify zone_tag.")
-	}
-
-	sf.FileName = config["filename"] + "-" + config["zone_tag"] + ".state"
+	sf.FileName = config["filename"] + ".state"
 
 	sf.lock = &sync.Mutex{}
 
