@@ -1,0 +1,5 @@
+= Ganalyticsbeat Docs
+
+Welcome to the Ganalyticsbeat documentation.
+
+

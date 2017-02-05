@@ -1,0 +1,46 @@
+################### Ganalyticsbeat Configuration #########################
+
+############################# Ganalyticsbeat ######################################
+
+ganalyticsbeat:
+  # Defines how often an event is sent to the output
+  period: 1m
+  zone_tag: ${ZONE_TAG:zone1}
+  state_file_path: ${STATE_FILE_PATH:""}
+  initial_date: ${INITIAL_DATE}
+  view_id: ${VIEW_ID}
+  metrics: ${METRICS} #"ga:sessions,ga:users,ga:pageviews,ga:bounceRate"
+  aws_access_key: ${AWS_ACCESS_KEY}
+  aws_secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+  aws_s3_bucket_name: ${AWS_BUCKET_NAME}
+  google_secrets: ${GOOGLE_SECRETS}
+  google_credentials: ${GOOGLE_CREDENTIALS}
+
+#================================ General =====================================
+
+# The name of the shipper that publishes the network data. It can be used to group
+# all the transactions sent by a single shipper in the web interface.
+name: ${BEAT_NAME:Google Analytics Beater}
+
+# The tags of the shipper are included in their own field with each
+# transaction published.
+#tags: ["service-X", "web-tier"]
+
+# Optional fields that you can specify to add additional information to the
+# output.
+#fields:
+#  env: staging
+
+#================================ Outputs =====================================
+
+# Configure what outputs to use when sending the data collected by the beat.
+# Multiple outputs may be used.
+
+#-------------------------- Elasticsearch output ------------------------------
+output.elasticsearch:
+  # Array of hosts to connect to.
+  hosts: ${ES_HOSTS}
+  index: ${INDEX_NAME:google-analytics-beat}
+
+
+
