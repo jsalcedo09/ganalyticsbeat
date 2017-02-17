@@ -83,14 +83,18 @@ func New(b *beat.Beat, cfg *common.Config) (beat.Beater, error) {
 		logp.Err("Unable to parse client secret file to config: %v", err)
 	}
 
-	gclient := bt.getClient(ctx, oauthconfig)
+	gclient := bt.getClient(ctx, oauthconfig, bt.config.GoogleAuthFlow)
 	bt.gclient = gclient
 
 	return bt, nil
 }
 
 func (bt *Ganalyticsbeat) Run(b *beat.Beat) error {
-	logp.Info("ganalyticsbeat is running! Hit CTRL-C to stop it. %s", bt.state.GetLastEndTS())
+	logp.Info("ganalyticsbeat is running! Hit CTRL-C to stop it.")
+	if bt.config.GoogleAuthFlow {
+		logp.Warn("Auth mode [google_auth_flow] enabled in config file, disable it to run beat")
+		return nil
+	}
 	bt.client = b.Publisher.Connect()
 
 	if bt.state.GetLastEndTS() != 0 {
@@ -140,11 +144,22 @@ func (bt *Ganalyticsbeat) Run(b *beat.Beat) error {
 	}
 }
 
+func (bt *Ganalyticsbeat) startAuthFlow() error {
+
+	return nil
+}
+
 func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd int) {
 	bt.state.UpdateLastRequestTS(timeNow)
+	loc, err := time.LoadLocation(bt.config.ViewTimeZone)
+	if err != nil {
+		logp.Err("Error loading timezone %v", err)
+	}
 	tms := time.Unix(int64(timeStart), 0)
+	tms = tms.In(loc)
 	tme := time.Unix(int64(timeEnd), 0)
-	logp.Info("Fetching report from %s to %s", tms.Format("2006-01-02 15:04"), tme.Format("2006-01-02 15:04"))
+	tme = tme.In(loc)
+	logp.Info("Fetching report from %s to %s", tms.Format("2006-01-02 15:04 -0700"), tme.Format("2006-01-02 15:04 -0700"))
 	requests := &analyticsreporting.GetReportsRequest{}
 	requests.ReportRequests = []*analyticsreporting.ReportRequest{
 		{
@@ -190,14 +205,26 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 			},
 		},
 	}
-	for _, metric := range strings.Split(bt.config.Metrics, ",") {
-		requests.ReportRequests[0].Metrics = append(requests.ReportRequests[0].Metrics,
-			&analyticsreporting.Metric{
-				Expression:strings.Trim(metric, " "),
-			},
-		)
+
+	if bt.config.Dimensions != "" {
+		for _, dimension := range strings.Split(bt.config.Dimensions, ",") {
+			requests.ReportRequests[0].Dimensions = append(requests.ReportRequests[0].Dimensions,
+				&analyticsreporting.Dimension{
+					Name:strings.Trim(dimension, " "),
+				},
+			)
+		}
 	}
 
+	if bt.config.Metrics != "" {
+		for _, metric := range strings.Split(bt.config.Metrics, ",") {
+			requests.ReportRequests[0].Metrics = append(requests.ReportRequests[0].Metrics,
+				&analyticsreporting.Metric{
+					Expression:strings.Trim(metric, " "),
+				},
+			)
+		}
+	}
 	bt.fetchRequest(requests, "0")
 
 	bt.state.UpdateLastStartTS(timeStart)
@@ -241,17 +268,18 @@ func (bt *Ganalyticsbeat) fetchRequest(requests *analyticsreporting.GetReportsRe
 
 func (bt *Ganalyticsbeat) processReport(report *analyticsreporting.Report) error {
 	headers := bt.getReportHeaders(report)
+	dimensions := report.ColumnHeader.Dimensions
 	for _, row := range report.Data.Rows {
-		ts := bt.getRowTimestamp(row)
+		ts := bt.getRowTimestamp(dimensions, row)
 		if bt.state.GetLastEndTS() < int(ts.Unix()) {
-			bt.processRow(ts, headers, row)
+			bt.processRow(ts, headers, dimensions, row)
 		}
 	}
 
 	return nil
 }
 
-func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.MetricHeader, row *analyticsreporting.ReportRow) error {
+func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.MetricHeader, dimensions []string, row *analyticsreporting.ReportRow) error {
 	for _, metric := range row.Metrics {
 		for i, value := range metric.Values {
 			switch headers.MetricHeaderEntries[i].Type {
@@ -262,6 +290,7 @@ func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.M
 					"type":       headers.MetricHeaderEntries[i].Name,
 					"value":      val,
 				}
+				event = bt.buildDimensions(event, dimensions, row)
 				bt.client.PublishEvent(event)
 				logp.Info("Event sent")
 			default:
@@ -270,6 +299,7 @@ func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.M
 					"type":       headers.MetricHeaderEntries[i].Name,
 					"value":      value,
 				}
+				event = bt.buildDimensions(event, dimensions, row)
 				bt.client.PublishEvent(event)
 				logp.Info("Event sent")
 
@@ -284,8 +314,42 @@ func (bt *Ganalyticsbeat) getReportHeaders(report *analyticsreporting.Report) *a
 	return report.ColumnHeader.MetricHeader
 }
 
-func (bt *Ganalyticsbeat) getRowTimestamp(row *analyticsreporting.ReportRow) time.Time {
-	ts, err := time.Parse("20060102 15:04", fmt.Sprintf("%s %s:%s", row.Dimensions[0], row.Dimensions[1], row.Dimensions[2]))
+func (bt *Ganalyticsbeat) buildDimensions(event common.MapStr, dimensions []string, row *analyticsreporting.ReportRow) common.MapStr {
+	for i, dim := range dimensions{
+		switch dim {
+			case "ga:date", "ga:hour", "ga:minute":
+				continue
+			default:
+				event.Put(dim, row.Dimensions[i])
+		}
+	}
+	return event
+}
+
+func (bt *Ganalyticsbeat) getRowTimestamp(dimensions []string, row *analyticsreporting.ReportRow) time.Time {
+	var date_index int
+	var hour_index int
+	var minute_index int
+	loc, err := time.LoadLocation(bt.config.ViewTimeZone)
+	if err != nil {
+		logp.Err("Error loading timezone %v", err)
+	}
+	for i, dim := range dimensions {
+		switch dim {
+			case "ga:date":
+				date_index = i
+			case "ga:hour":
+				hour_index = i
+			case "ga:minute":
+				minute_index = i
+		}
+	}
+
+	ts, err := time.Parse("20060102 15:04 -0700", fmt.Sprintf("%s %s:%s %s",
+		row.Dimensions[date_index],
+		row.Dimensions[hour_index],
+		row.Dimensions[minute_index],
+		time.Now().In(loc).Format("-0700")))
 	if err != nil {
 		logp.Err("Error parsing row date %v", err)
 	}
@@ -294,17 +358,25 @@ func (bt *Ganalyticsbeat) getRowTimestamp(row *analyticsreporting.ReportRow) tim
 
 // getClient uses a Context and Config to retrieve a Token
 // then generate a Client. It returns the generated Client.
-func (bt *Ganalyticsbeat) getClient(ctx context.Context, config *oauth2.Config) *http.Client {
+func (bt *Ganalyticsbeat) getClient(ctx context.Context, config *oauth2.Config, auth bool) *http.Client {
 	cacheFile, err := bt.tokenCacheFile()
 	if err != nil {
 		logp.Err("Unable to get path to cached credential file. %v", err)
 	}
-	tok, err := bt.tokenFromFile(cacheFile)
-	if err != nil {
-		tok = bt.getTokenFromConfig()
-		bt.saveToken(cacheFile, tok)
+
+	if auth {
+		tok := bt.getTokenFromWeb(config)
+		jsonString, _ := json.Marshal(tok)
+		logp.Info("Token: %s", jsonString)
+		return config.Client(ctx, tok)
+	}else {
+		tok, err := bt.tokenFromFile(cacheFile)
+		if err != nil {
+			tok = bt.getTokenFromConfig()
+			bt.saveToken(cacheFile, tok)
+		}
+		return config.Client(ctx, tok)
 	}
-	return config.Client(ctx, tok)
 }
 
 // getTokenFromWeb uses Config to request a Token.

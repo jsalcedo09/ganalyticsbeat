@@ -9,6 +9,8 @@ ganalyticsbeat:
   initial_date: ${INITIAL_DATE}
   view_id: ${VIEW_ID}
   metrics: ${METRICS} #"ga:sessions,ga:users,ga:pageviews,ga:bounceRate"
+  dimensions: ${DIMENSION} #"ga:eventCategory, ga:eventLabel"
+  view_timezone: ${VIEW_TIMEZONE:"UTC"}
   state_file_storage_type: ${STATE_FILE_STORAGE_TYPE}
   aws_access_key: ${AWS_ACCESS_KEY}
   aws_secret_access_key: ${AWS_SECRET_ACCESS_KEY}

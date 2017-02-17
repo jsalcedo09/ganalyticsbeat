@@ -21,6 +21,8 @@ Special thanks to [Cloudflare Beat](https://github.com/hartfordfive/cloudflarebe
 - `ganalyticsbeat.view_id` :(mandatory) The View ID of the Google Analytics View 
 - `ganalyticsbeat.initial_date` : (mandatory) The starting date for Google Analytics Data in format `YYYY-MM-DD`
 - `ganalyticsbeat.metrics` : (mandatory) The metrics list in comma separated values  `ga:sessions,ga:users,ga:pageviews,ga:bounceRate` 
+- `ganalyticsbeat.dimensions` : The dimensions list in comma separated values  `ga:eventCategory, ga:eventLabel`
+- `ganalyticsbeat.view_timezone` : (mandatory) The timezone which the Google Analytics View is configured `America/Bogota`
 - `ganalyticsbeat.state_file_storage_type` : The type of storage for the state file, either `disk` or `s3`, which keeps track of the current progress. (Default: disk)
 - `ganalyticsbeat.state_file_path` : The path in which the state file will be saved (applicable only with `disk` storage type)
 - `ganalyticsbeat.state_file_name` : The name of the state file
@@ -29,6 +31,8 @@ Special thanks to [Cloudflare Beat](https://github.com/hartfordfive/cloudflarebe
 - `ganalyticsbeat.aws_s3_bucket_name` : The name of the S3 bucket where the state file will be stored
 - `ganalyticsbeat.google_credentials` : JSON as a string with Google Credentials tokens
 - `ganalyticsbeat.google_secrets` : JSON as a string with Google Secrets on the [Google API Console](https://console.developers.google.com/)
+
+- `ganalyticsbeat.google_auth_flow` : Special flag to start the auth flow to get credentials JSON. Defaults to `false`
 
 ### Using S3 Storage for state file
 

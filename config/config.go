@@ -16,15 +16,23 @@ type Config struct {
 	InitialDate               string           `config:"initial_date"`
 	ViewId                    string           `config:"view_id"`
 	Metrics                   string           `config:"metrics"`
+	ViewTimeZone              string           `config:"view_timezone"`
+	Dimensions                string           `config:"dimensions"`
 	GoogleSecrets		  string	   `config:"google_secrets"`
 	GoogleCredentials         string           `config:"google_credentials"`
-
+	GoogleAuthFlow         	  bool             `config:"google_auth_flow"`
 
 }
+
+type Report struct{
+
+}
+
 
 var DefaultConfig = Config{
 	Period: 		      10 * time.Minute,
 	StateFileStorageType:         "disk",
 	StateFileName:                "ganalyticsbeat",
 	StateFilePath:                "/etc/ganalyticsbeat/",
+	GoogleAuthFlow:		      false,
 }
