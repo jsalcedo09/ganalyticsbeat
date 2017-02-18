@@ -10,6 +10,7 @@ ganalyticsbeat:
   view_id: ${VIEW_ID}
   metrics: ${METRICS} #"ga:sessions,ga:users,ga:pageviews,ga:bounceRate"
   dimensions: ${DIMENSION} #"ga:eventCategory, ga:eventLabel"
+  batch_size: ${BATCH_SIZE:1000}
   view_timezone: ${VIEW_TIMEZONE:"UTC"}
   state_file_storage_type: ${STATE_FILE_STORAGE_TYPE}
   aws_access_key: ${AWS_ACCESS_KEY}

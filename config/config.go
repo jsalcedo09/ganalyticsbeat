@@ -17,6 +17,7 @@ type Config struct {
 	ViewId                    string           `config:"view_id"`
 	Metrics                   string           `config:"metrics"`
 	ViewTimeZone              string           `config:"view_timezone"`
+	BatchSize          	  int64            `config:"batch_size"`
 	Dimensions                string           `config:"dimensions"`
 	GoogleSecrets		  string	   `config:"google_secrets"`
 	GoogleCredentials         string           `config:"google_credentials"`
@@ -35,4 +36,5 @@ var DefaultConfig = Config{
 	StateFileName:                "ganalyticsbeat",
 	StateFilePath:                "/etc/ganalyticsbeat/",
 	GoogleAuthFlow:		      false,
+	BatchSize:	   	      1000,
 }

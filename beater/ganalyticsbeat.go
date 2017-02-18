@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-
 	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
@@ -28,6 +27,7 @@ import (
 const (
 	STATEFILE_NAME = "ganalyticsbeat.state"
 	OFFSET_PAST_MINUTES = 30
+	MAX_RETRIES = 30
 )
 
 type Ganalyticsbeat struct {
@@ -38,7 +38,7 @@ type Ganalyticsbeat struct {
 	gclient *http.Client
 }
 
-var timeStart, timeEnd, timeNow int
+var timeStart, timeEnd, timeNow, fails, dropoff int
 
 // Creates beater
 func New(b *beat.Beat, cfg *common.Config) (beat.Beater, error) {
@@ -49,7 +49,7 @@ func New(b *beat.Beat, cfg *common.Config) (beat.Beater, error) {
 
 	if config.Period.Minutes() < 1 || config.Period.Minutes() > 30 {
 		logp.Warn("Chosen period of %s is not valid. Changing to 5m", config.Period.String())
-		config.Period = 5 * time.Minute
+		//config.Period = 5 * time.Minute
 	}
 
 	bt := &Ganalyticsbeat{
@@ -99,7 +99,7 @@ func (bt *Ganalyticsbeat) Run(b *beat.Beat) error {
 
 	if bt.state.GetLastEndTS() != 0 {
 		timeNow = int(time.Now().UTC().Unix())
-		timeDiff := int((timeNow - (OFFSET_PAST_MINUTES * 60)) - (bt.state.GetLastEndTS() + 1))
+		timeDiff := int(timeNow - (bt.state.GetLastEndTS() + 1))
 		timeStart = bt.state.GetLastEndTS() + 1
 
 		// If the time difference from NOW to the last time the DownloadAndPublish ran is greater than the configured period,
@@ -114,33 +114,51 @@ func (bt *Ganalyticsbeat) Run(b *beat.Beat) error {
 		} else {
 			// In this case, the time difference from NOW to the last time the DownloadAndPublish ran is greater than
 			// the configured period, so run immediately before starting the ticker
-			timeEnd := timeNow - (OFFSET_PAST_MINUTES * 60)
+			timeEnd := timeNow
 			logp.Info("Catching up. Immediately processing logs between %s to %s", time.Unix(int64(timeStart), 0), time.Unix(int64(timeEnd), 0))
 			bt.DownloadAndPublish(int(time.Now().UTC().Unix()), timeStart, timeEnd)
 		}
 	}
 
 	ticker := time.NewTicker(bt.config.Period)
+	fails = 0
+	dropoff = 0
 	for {
 		select {
 		case <-bt.done:
 			return nil
 		case <-ticker.C:
 		}
+		if dropoff == 0 {
+			timeNow = int(time.Now().UTC().Unix())
 
-		timeNow = int(time.Now().UTC().Unix())
-
-		if bt.state.GetLastStartTS() != 0 {
-			timeStart = bt.state.GetLastEndTS() + 1 // last end TS as per statefile + 1 second
-		} else {
-			t2, err := time.Parse("2006-01-02", bt.config.InitialDate)
-			if err != nil {
-				logp.Err("Error parsing Initial Date from config %v", err)
+			if bt.state.GetLastStartTS() != 0 {
+				timeStart = bt.state.GetLastEndTS() + 1 // last end TS as per statefile + 1 second
+			} else {
+				t2, err := time.Parse("2006-01-02", bt.config.InitialDate)
+				if err != nil {
+					logp.Err("Error parsing Initial Date from config %v", err)
+				}
+				timeStart = int(t2.Unix())
 			}
-			timeStart = int(t2.Unix())
+			timeEnd := timeNow
+			err := bt.DownloadAndPublish(timeNow, timeStart, timeEnd)
+			if err != nil {
+				fails += 1
+				if dropoff < MAX_RETRIES {
+					dropoff += fails
+				}else{
+					dropoff = MAX_RETRIES
+				}
+				logp.Warn("Retrying in %s because of the error", time.Duration(bt.config.Period.Seconds() * float64(dropoff+1))*time.Second )
+			} else {
+				fails = 0
+				dropoff = 0
+			}
+		}else{
+			logp.Warn("%s to next run", time.Duration(bt.config.Period.Seconds() * float64(dropoff))*time.Second )
+			dropoff -= 1
 		}
-		timeEnd := timeNow - (OFFSET_PAST_MINUTES * 60)
-		bt.DownloadAndPublish(timeNow, timeStart, timeEnd)
 	}
 }
 
@@ -149,7 +167,7 @@ func (bt *Ganalyticsbeat) startAuthFlow() error {
 	return nil
 }
 
-func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd int) {
+func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd int) error {
 	bt.state.UpdateLastRequestTS(timeNow)
 	loc, err := time.LoadLocation(bt.config.ViewTimeZone)
 	if err != nil {
@@ -165,6 +183,7 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 		{
 			ViewId:bt.config.ViewId,
 			SamplingLevel:"LARGE",
+			PageSize:bt.config.BatchSize,
 			Dimensions:[]*analyticsreporting.Dimension{
 				{
 					Name:"ga:date",
@@ -225,15 +244,21 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 			)
 		}
 	}
-	bt.fetchRequest(requests, "0")
+	err = bt.fetchRequest(requests, "0")
+	if  err != nil {
+		logp.Err("Unable to retrieve report: %v", err)
+		return err
 
-	bt.state.UpdateLastStartTS(timeStart)
-	bt.state.UpdateLastRequestTS(timeNow)
+	}else{
+		bt.state.UpdateLastStartTS(timeStart)
+		bt.state.UpdateLastRequestTS(timeNow)
 
-	if err := bt.state.Save(); err != nil {
-		logp.Info("[ERROR] Could not persist state file to storage: %s", err.Error())
-	} else {
-		logp.Info("Updated state file")
+		if err := bt.state.Save(); err != nil {
+			logp.Info("[ERROR] Could not persist state file to storage: %s", err.Error())
+		} else {
+			logp.Info("Updated state file")
+		}
+		return nil
 	}
 }
 
@@ -246,18 +271,21 @@ func (bt *Ganalyticsbeat) fetchRequest(requests *analyticsreporting.GetReportsRe
 
 	r, err := srv.Reports.BatchGet(requests).Do()
 	if err != nil {
-		logp.Err("Unable to retrieve report: %v", err)
+		return err
 	}
 	for _, report := range r.Reports {
 		bt.processReport(report)
 		if report.NextPageToken != "" {
 			token, err := strconv.ParseInt(report.NextPageToken, 0, 64)
 			if err != nil {
-				logp.Err("Error parsing NetxPageToken: %v", err)
+				return err
 			}
 			if token > 0 {
 				logp.Info("Fetching next page report %s", report.NextPageToken)
-				bt.fetchRequest(requests, report.NextPageToken)
+				err = bt.fetchRequest(requests, report.NextPageToken)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}
