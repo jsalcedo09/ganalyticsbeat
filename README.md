@@ -23,6 +23,7 @@ Special thanks to [Cloudflare Beat](https://github.com/hartfordfive/cloudflarebe
 - `ganalyticsbeat.metrics` : (mandatory) The metrics list in comma separated values  `ga:sessions,ga:users,ga:pageviews,ga:bounceRate` 
 - `ganalyticsbeat.dimensions` : The dimensions list in comma separated values  `ga:eventCategory, ga:eventLabel`
 - `ganalyticsbeat.view_timezone` : (mandatory) The timezone which the Google Analytics View is configured `America/Bogota`
+- `ganalyticsbeat.batch_size` : Number of records fetched per request from Google Analytics API, defaults to 1000
 - `ganalyticsbeat.state_file_storage_type` : The type of storage for the state file, either `disk` or `s3`, which keeps track of the current progress. (Default: disk)
 - `ganalyticsbeat.state_file_path` : The path in which the state file will be saved (applicable only with `disk` storage type)
 - `ganalyticsbeat.state_file_name` : The name of the state file
