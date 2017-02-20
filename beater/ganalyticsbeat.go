@@ -348,7 +348,7 @@ func (bt *Ganalyticsbeat) buildDimensions(event common.MapStr, dimensions []stri
 			case "ga:date", "ga:hour", "ga:minute":
 				continue
 			default:
-				formated_dim := strings.Replace(dim, ":", "_", 0)
+				formated_dim := strings.Replace(dim, ":", ".", -1)
 				event.Put(formated_dim, row.Dimensions[i])
 		}
 	}
