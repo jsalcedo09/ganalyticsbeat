@@ -6,6 +6,7 @@ ganalyticsbeat:
   # Defines how often an event is sent to the output
   period: 1m
   state_file_path: ${STATE_FILE_PATH:""}
+  state_file_name: ${STATE_FILE_NAME:"ganalyticsbeat"}
   initial_date: ${INITIAL_DATE}
   view_id: ${VIEW_ID}
   metrics: ${METRICS} #"ga:sessions,ga:users,ga:pageviews,ga:bounceRate"
