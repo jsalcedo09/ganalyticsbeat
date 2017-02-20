@@ -297,17 +297,24 @@ func (bt *Ganalyticsbeat) fetchRequest(requests *analyticsreporting.GetReportsRe
 func (bt *Ganalyticsbeat) processReport(report *analyticsreporting.Report) error {
 	headers := bt.getReportHeaders(report)
 	dimensions := report.ColumnHeader.Dimensions
+	logp.Info("Fetching %s records", string(report.Data.RowCount))
+	var cont int
+	cont = 0
 	for _, row := range report.Data.Rows {
 		ts := bt.getRowTimestamp(dimensions, row)
-		if bt.state.GetLastEndTS() < int(ts.Unix()) {
+		if bt.state.GetLastEndTS() <= int(ts.Unix()) {
 			bt.processRow(ts, headers, dimensions, row)
+			bt.state.UpdateLastEndTS(int(ts.Unix()))
+			cont++
 		}
 	}
-
+	logp.Info("Processed %s rows", cont)
 	return nil
 }
 
 func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.MetricHeader, dimensions []string, row *analyticsreporting.ReportRow) error {
+	var cont int
+	cont = 0
 	for _, metric := range row.Metrics {
 		for i, value := range metric.Values {
 			switch headers.MetricHeaderEntries[i].Type {
@@ -320,7 +327,7 @@ func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.M
 				}
 				event = bt.buildDimensions(event, dimensions, row)
 				bt.client.PublishEvent(event)
-				logp.Info("Event sent")
+				cont++
 			default:
 				event := common.MapStr{
 					"@timestamp": common.Time(ts),
@@ -329,12 +336,12 @@ func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.M
 				}
 				event = bt.buildDimensions(event, dimensions, row)
 				bt.client.PublishEvent(event)
-				logp.Info("Event sent")
+				cont++
 
 			}
 		}
 	}
-	bt.state.UpdateLastEndTS(int(ts.Unix()))
+	logp.Info("Published %s of current row", cont)
 	return nil
 }
 
