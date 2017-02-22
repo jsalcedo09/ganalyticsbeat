@@ -22,6 +22,7 @@ import (
 	"time"
 	"strconv"
 	"strings"
+	b64 "encoding/base64"
 )
 
 const (
@@ -36,9 +37,11 @@ type Ganalyticsbeat struct {
 	client  publisher.Client
 	state   *ganalytics.StateFile
 	gclient *http.Client
+	beat *beat.Beat
 }
 
-var timeStart, timeEnd, timeNow, fails, dropoff int
+var timeStart, timeEnd, timeNow, fails, dropoff, totalevents, prevtime int
+var publishing bool
 
 // Creates beater
 func New(b *beat.Beat, cfg *common.Config) (beat.Beater, error) {
@@ -49,12 +52,13 @@ func New(b *beat.Beat, cfg *common.Config) (beat.Beater, error) {
 
 	if config.Period.Minutes() < 1 || config.Period.Minutes() > 30 {
 		logp.Warn("Chosen period of %s is not valid. Changing to 5m", config.Period.String())
-		//config.Period = 5 * time.Minute
+		config.Period = 5 * time.Minute
 	}
 
 	bt := &Ganalyticsbeat{
 		done: make(chan struct{}),
 		config: config,
+		beat: b,
 	}
 
 	sfConf := map[string]string{
@@ -123,6 +127,7 @@ func (bt *Ganalyticsbeat) Run(b *beat.Beat) error {
 	ticker := time.NewTicker(bt.config.Period)
 	fails = 0
 	dropoff = 0
+	publishing = false
 	for {
 		select {
 		case <-bt.done:
@@ -130,30 +135,36 @@ func (bt *Ganalyticsbeat) Run(b *beat.Beat) error {
 		case <-ticker.C:
 		}
 		if dropoff == 0 {
-			timeNow = int(time.Now().UTC().Unix())
+			if !publishing {
+				publishing = true
+				timeNow = int(time.Now().UTC().Unix())
 
-			if bt.state.GetLastStartTS() != 0 {
-				timeStart = bt.state.GetLastEndTS() + 1 // last end TS as per statefile + 1 second
-			} else {
-				t2, err := time.Parse("2006-01-02", bt.config.InitialDate)
+				if bt.state.GetLastStartTS() != 0 {
+					timeStart = bt.state.GetLastEndTS() + 1 // last end TS as per statefile + 1 second
+				} else {
+					t2, err := time.Parse("2006-01-02", bt.config.InitialDate)
+					if err != nil {
+						logp.Err("Error parsing Initial Date from config %v", err)
+					}
+					timeStart = int(t2.Unix())
+				}
+				timeEnd := timeNow
+				err := bt.DownloadAndPublish(timeNow, timeStart, timeEnd)
 				if err != nil {
-					logp.Err("Error parsing Initial Date from config %v", err)
+					fails += 1
+					if dropoff < MAX_RETRIES {
+						dropoff += fails
+					} else {
+						dropoff = MAX_RETRIES
+					}
+					logp.Warn("Retrying in %s because of the error", time.Duration(bt.config.Period.Seconds() * float64(dropoff + 1)) * time.Second)
+				} else {
+					fails = 0
+					dropoff = 0
 				}
-				timeStart = int(t2.Unix())
-			}
-			timeEnd := timeNow
-			err := bt.DownloadAndPublish(timeNow, timeStart, timeEnd)
-			if err != nil {
-				fails += 1
-				if dropoff < MAX_RETRIES {
-					dropoff += fails
-				}else{
-					dropoff = MAX_RETRIES
-				}
-				logp.Warn("Retrying in %s because of the error", time.Duration(bt.config.Period.Seconds() * float64(dropoff+1))*time.Second )
-			} else {
-				fails = 0
-				dropoff = 0
+				publishing = false
+			}else{
+				logp.Warn("Already publishing, wating for next tick...")
 			}
 		}else{
 			logp.Warn("%s to next run", time.Duration(bt.config.Period.Seconds() * float64(dropoff))*time.Second )
@@ -191,35 +202,11 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 				{
 					Name:"ga:hour",
 				},
-				{
-					Name:"ga:minute",
-				},
 			},
 			DateRanges:[]*analyticsreporting.DateRange{
 				{
 					StartDate:tms.Format("2006-01-02"),
 					EndDate:tme.Format("2006-01-02"),
-				},
-			},
-			DimensionFilterClauses:[]*analyticsreporting.DimensionFilterClause{
-				{
-					Filters:[]*analyticsreporting.DimensionFilter{
-						{
-							Operator:"NUMERIC_GREATER_THAN",
-							DimensionName:"ga:date",
-							Expressions:[]string{tms.Format("20060102")},
-						},
-						{
-							Operator:"NUMERIC_GREATER_THAN",
-							DimensionName:"ga:hour",
-							Expressions:[]string{tms.Format("15")},
-						},
-						{
-							Operator:"NUMERIC_GREATER_THAN",
-							DimensionName:"ga:minute",
-							Expressions:[]string{tms.Format("04")},
-						},
-					},
 				},
 			},
 		},
@@ -244,6 +231,8 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 			)
 		}
 	}
+	totalevents = 0
+	prevtime = 0
 	err = bt.fetchRequest(requests, "0")
 	if  err != nil {
 		logp.Err("Unable to retrieve report: %v", err)
@@ -273,7 +262,7 @@ func (bt *Ganalyticsbeat) fetchRequest(requests *analyticsreporting.GetReportsRe
 	if err != nil {
 		return err
 	}
-	for _, report := range r.Reports {
+	for i, report := range r.Reports {
 		bt.processReport(report)
 		if report.NextPageToken != "" {
 			token, err := strconv.ParseInt(report.NextPageToken, 0, 64)
@@ -288,6 +277,12 @@ func (bt *Ganalyticsbeat) fetchRequest(requests *analyticsreporting.GetReportsRe
 				}
 			}
 		}
+		var tot int
+		for _, val := range report.Data.Totals[i].Values {
+			num, _ := strconv.ParseInt(val, 10, 64)
+			tot += int(num)
+		}
+		logp.Info("Published %s of %s events", totalevents, int(report.Data.RowCount)*len(report.ColumnHeader.MetricHeader.MetricHeaderEntries))
 	}
 
 	return nil
@@ -297,16 +292,18 @@ func (bt *Ganalyticsbeat) fetchRequest(requests *analyticsreporting.GetReportsRe
 func (bt *Ganalyticsbeat) processReport(report *analyticsreporting.Report) error {
 	headers := bt.getReportHeaders(report)
 	dimensions := report.ColumnHeader.Dimensions
-	logp.Info("Fetching %s records", string(report.Data.RowCount))
+	logp.Info("Fetching %s records", report.Data.RowCount)
 	var cont int
 	cont = 0
+
 	for _, row := range report.Data.Rows {
 		ts := bt.getRowTimestamp(dimensions, row)
-		if bt.state.GetLastEndTS() <= int(ts.Unix()) {
+		if bt.state.GetLastEndTS() < int(ts.Unix()) || prevtime == int(ts.Unix()) {
 			bt.processRow(ts, headers, dimensions, row)
 			bt.state.UpdateLastEndTS(int(ts.Unix()))
 			cont++
 		}
+		prevtime = int(ts.Unix())
 	}
 	logp.Info("Processed %s rows", cont)
 	return nil
@@ -314,9 +311,15 @@ func (bt *Ganalyticsbeat) processReport(report *analyticsreporting.Report) error
 
 func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.MetricHeader, dimensions []string, row *analyticsreporting.ReportRow) error {
 	var cont int
+	var events []common.MapStr
 	cont = 0
+
+
 	for _, metric := range row.Metrics {
 		for i, value := range metric.Values {
+			indexname, _ := bt.beat.Config.Output["elasticsearch"].String("index",0)
+			id := fmt.Sprintf("%s_%s_%s",indexname,headers.MetricHeaderEntries[i].Name, strconv.Itoa(int(ts.Unix())))
+			id = b64.StdEncoding.EncodeToString([]byte(id))
 			switch headers.MetricHeaderEntries[i].Type {
 			case "INTEGER", "PERCENT":
 				val, _ := strconv.ParseFloat(value, 64)
@@ -324,24 +327,29 @@ func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.M
 					"@timestamp": common.Time(ts),
 					"type":       headers.MetricHeaderEntries[i].Name,
 					"value":      val,
+					"key": id,
 				}
 				event = bt.buildDimensions(event, dimensions, row)
+				events = append(events, event)
 				bt.client.PublishEvent(event)
 				cont++
+				totalevents += 1
 			default:
 				event := common.MapStr{
 					"@timestamp": common.Time(ts),
 					"type":       headers.MetricHeaderEntries[i].Name,
 					"value":      value,
+					"key": id,
 				}
 				event = bt.buildDimensions(event, dimensions, row)
+				events = append(events, event)
 				bt.client.PublishEvent(event)
 				cont++
+				totalevents += 1
 
 			}
 		}
 	}
-	logp.Info("Published %s of current row", cont)
 	return nil
 }
 
@@ -365,7 +373,6 @@ func (bt *Ganalyticsbeat) buildDimensions(event common.MapStr, dimensions []stri
 func (bt *Ganalyticsbeat) getRowTimestamp(dimensions []string, row *analyticsreporting.ReportRow) time.Time {
 	var date_index int
 	var hour_index int
-	var minute_index int
 	loc, err := time.LoadLocation(bt.config.ViewTimeZone)
 	if err != nil {
 		logp.Err("Error loading timezone %v", err)
@@ -376,15 +383,13 @@ func (bt *Ganalyticsbeat) getRowTimestamp(dimensions []string, row *analyticsrep
 				date_index = i
 			case "ga:hour":
 				hour_index = i
-			case "ga:minute":
-				minute_index = i
 		}
 	}
 
 	ts, err := time.Parse("20060102 15:04 -0700", fmt.Sprintf("%s %s:%s %s",
 		row.Dimensions[date_index],
 		row.Dimensions[hour_index],
-		row.Dimensions[minute_index],
+		"00", //Minute 00
 		time.Now().In(loc).Format("-0700")))
 	if err != nil {
 		logp.Err("Error parsing row date %v", err)
