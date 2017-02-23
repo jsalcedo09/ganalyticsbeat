@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	b64 "encoding/base64"
+	"errors"
 )
 
 const (
@@ -40,7 +41,7 @@ type Ganalyticsbeat struct {
 	beat *beat.Beat
 }
 
-var timeStart, timeEnd, timeNow, fails, dropoff, totalevents, prevtime int
+var timeStart, timeEnd, timeNow, fails, dropoff, totalevents int
 var publishing bool
 
 // Creates beater
@@ -232,7 +233,6 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 		}
 	}
 	totalevents = 0
-	prevtime = 0
 	err = bt.fetchRequest(requests, "0")
 	if  err != nil {
 		logp.Err("Unable to retrieve report: %v", err)
@@ -298,12 +298,13 @@ func (bt *Ganalyticsbeat) processReport(report *analyticsreporting.Report) error
 
 	for _, row := range report.Data.Rows {
 		ts := bt.getRowTimestamp(dimensions, row)
-		if bt.state.GetLastEndTS() < int(ts.Unix()) || prevtime == int(ts.Unix()) {
-			bt.processRow(ts, headers, dimensions, row)
+		err := bt.processRow(ts, headers, dimensions, row)
+		if err != nil{
+			logp.Warn("Error processing row %v", err)
+		}else{
 			bt.state.UpdateLastEndTS(int(ts.Unix()))
 			cont++
 		}
-		prevtime = int(ts.Unix())
 	}
 	logp.Info("Processed %s rows", cont)
 	return nil
@@ -314,43 +315,62 @@ func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.M
 	var events []common.MapStr
 	cont = 0
 
-
 	for _, metric := range row.Metrics {
-		for i, value := range metric.Values {
-			indexname, _ := bt.beat.Config.Output["elasticsearch"].String("index",0)
-			id := fmt.Sprintf("%s_%s_%s",indexname,headers.MetricHeaderEntries[i].Name, strconv.Itoa(int(ts.Unix())))
-			id = b64.StdEncoding.EncodeToString([]byte(id))
-			switch headers.MetricHeaderEntries[i].Type {
-			case "INTEGER", "PERCENT":
-				val, _ := strconv.ParseFloat(value, 64)
-				event := common.MapStr{
-					"@timestamp": common.Time(ts),
-					"type":       headers.MetricHeaderEntries[i].Name,
-					"value":      val,
-					"key": id,
-				}
-				event = bt.buildDimensions(event, dimensions, row)
-				events = append(events, event)
-				bt.client.PublishEvent(event)
-				cont++
-				totalevents += 1
-			default:
-				event := common.MapStr{
-					"@timestamp": common.Time(ts),
-					"type":       headers.MetricHeaderEntries[i].Name,
-					"value":      value,
-					"key": id,
-				}
-				event = bt.buildDimensions(event, dimensions, row)
-				events = append(events, event)
-				bt.client.PublishEvent(event)
-				cont++
-				totalevents += 1
+			for i, value := range metric.Values {
+				key := bt.getRowKey(headers.MetricHeaderEntries[i].Name, dimensions, row, ts)
+				if bt.state.GetLastKeyEndTS(key) < int(ts.Unix()){
+					switch headers.MetricHeaderEntries[i].Type {
+					case "INTEGER", "PERCENT":
+						val, _ := strconv.ParseFloat(value, 64)
+						event := common.MapStr{
+							"@timestamp": common.Time(ts),
+							"type":       headers.MetricHeaderEntries[i].Name,
+							"value":      val,
+							"key": key,
+						}
+						event = bt.buildDimensions(event, dimensions, row)
+						events = append(events, event)
+						bt.client.PublishEvent(event)
+						cont++
+						totalevents += 1
+					default:
+						event := common.MapStr{
+							"@timestamp": common.Time(ts),
+							"type":       headers.MetricHeaderEntries[i].Name,
+							"value":      value,
+							"key": key,
+						}
+						event = bt.buildDimensions(event, dimensions, row)
+						events = append(events, event)
+						bt.client.PublishEvent(event)
+						cont++
+						totalevents += 1
 
+					}
+					bt.state.UpdateLastKeyEndTS(key, int(ts.Unix()))
+				}else{
+					return errors.New("Row already proceced")
+				}
 			}
+
+	}
+
+	return nil
+}
+
+func (bt *Ganalyticsbeat) getRowKey(header string, dimensions []string, row *analyticsreporting.ReportRow, ts time.Time) string {
+	key, _ := bt.beat.Config.Output["elasticsearch"].String("index",0)
+	key = fmt.Sprintf("%s_%s",key, header)
+	for i, dim := range dimensions{
+		switch dim {
+			case "ga:date", "ga:hour", "ga:minute":
+				continue
+			default:
+				formated_dim := strings.Replace(dim, ":", ".", -1)
+				key = fmt.Sprintf("%s_%s:%s",key, formated_dim, row.Dimensions[i])
 		}
 	}
-	return nil
+	return b64.StdEncoding.EncodeToString([]byte(key))
 }
 
 func (bt *Ganalyticsbeat) getReportHeaders(report *analyticsreporting.Report) *analyticsreporting.MetricHeader {

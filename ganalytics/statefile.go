@@ -34,13 +34,21 @@ type StateFile struct {
 	lock        *sync.Mutex
 }
 
+type LastKeyEnd struct {
+	Key	string		`json:"key"`
+	Time	int		`json:"time"`
+}
+
 type Properties struct {
 	LastStartTS   int `json:"last_start_ts"`
 	LastEndTS     int `json:"last_end_ts"`
 	LastCount     int `json:"last_count"`
 	LastRequestTS int `json:"last_request_ts"`
 	LastUpdateTS  int `json:"last_update_ts"`
+	LastKeyEndTS  []LastKeyEnd `json:"last_keys_end_ts"`
 }
+
+
 
 type awsS3Settings struct {
 	awsAccesKey        string
@@ -238,6 +246,37 @@ func (s *StateFile) UpdateLastRequestTS(ts int) {
 	s.properties.LastRequestTS = ts
 	s.lock.Unlock()
 }
+
+func (s *StateFile) GetKey(key string) (int, LastKeyEnd) {
+	for i , value := range s.properties.LastKeyEndTS {
+		if value.Key == key {
+			return i, value
+		}
+	}
+	return -1, LastKeyEnd{
+		Key: key,
+		Time:0,
+	}
+}
+
+func (s *StateFile) GetLastKeyEndTS(key string) int {
+	_, keyle := s.GetKey(key)
+	return keyle.Time
+}
+
+func (s *StateFile) UpdateLastKeyEndTS(key string, ts int) {
+	s.lock.Lock()
+	i, keyle := s.GetKey(key)
+	keyle.Time = ts
+	if i > -1 {
+		s.properties.LastKeyEndTS[i] = keyle
+	}else{
+		s.properties.LastKeyEndTS = append(s.properties.LastKeyEndTS, keyle)
+	}
+	s.lock.Unlock()
+}
+
+
 
 func (s *StateFile) Save() error {
 
