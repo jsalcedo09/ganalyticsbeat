@@ -51,11 +51,6 @@ func New(b *beat.Beat, cfg *common.Config) (beat.Beater, error) {
 		return nil, fmt.Errorf("Error reading config file: %v", err)
 	}
 
-	if config.Period.Minutes() < 1 || config.Period.Minutes() > 30 {
-		logp.Warn("Chosen period of %s is not valid. Changing to 5m", config.Period.String())
-		//config.Period = 5 * time.Minute
-	}
-
 	bt := &Ganalyticsbeat{
 		done:   make(chan struct{}),
 		config: config,
@@ -102,7 +97,7 @@ func (bt *Ganalyticsbeat) Run(b *beat.Beat) error {
 	}
 	bt.client = b.Publisher.Connect()
 
-	if bt.state.GetLastEndTS() != 0 {
+	if bt.state.GetLastEndTS() != 0 && bt.config.AnalyticType == "reports" {
 		timeNow = int(time.Now().UTC().Unix())
 		timeDiff := int(timeNow - (bt.state.GetLastEndTS() + 1))
 		timeStart = bt.state.GetLastEndTS() + 1
@@ -143,7 +138,7 @@ func (bt *Ganalyticsbeat) Run(b *beat.Beat) error {
 				if bt.state.GetLastStartTS() != 0 {
 					timeStart = bt.state.GetLastEndTS() + 1 // last end TS as per statefile + 1 second
 				} else {
-					t2, err := time.Parse("2006-01-02", bt.config.InitialDate)
+					t2, err := time.Parse("2006-01-02", bt.config.Reports.InitialDate)
 					if err != nil {
 						logp.Err("Error parsing Initial Date from config %v", err)
 					}
@@ -181,7 +176,7 @@ func (bt *Ganalyticsbeat) startAuthFlow() error {
 
 func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd int) error {
 	bt.state.UpdateLastRequestTS(timeNow)
-	loc, err := time.LoadLocation(bt.config.ViewTimeZone)
+	loc, err := time.LoadLocation(bt.config.Reports.ViewTimeZone)
 	if err != nil {
 		logp.Err("Error loading timezone %v", err)
 	}
@@ -193,7 +188,7 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 	requests := &analyticsreporting.GetReportsRequest{}
 	requests.ReportRequests = []*analyticsreporting.ReportRequest{
 		{
-			ViewId:        bt.config.ViewId,
+			ViewId:        bt.config.Reports.ViewId,
 			SamplingLevel: "LARGE",
 			PageSize:      bt.config.BatchSize,
 			Dimensions: []*analyticsreporting.Dimension{
@@ -213,8 +208,8 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 		},
 	}
 
-	if bt.config.Dimensions != "" {
-		for _, dimension := range strings.Split(bt.config.Dimensions, ",") {
+	if bt.config.Reports.Dimensions != "" {
+		for _, dimension := range strings.Split(bt.config.Reports.Dimensions, ",") {
 			requests.ReportRequests[0].Dimensions = append(requests.ReportRequests[0].Dimensions,
 				&analyticsreporting.Dimension{
 					Name: strings.Trim(dimension, " "),
@@ -223,8 +218,8 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 		}
 	}
 
-	if bt.config.Metrics != "" {
-		for _, metric := range strings.Split(bt.config.Metrics, ",") {
+	if bt.config.Reports.Metrics != "" {
+		for _, metric := range strings.Split(bt.config.Reports.Metrics, ",") {
 			requests.ReportRequests[0].Metrics = append(requests.ReportRequests[0].Metrics,
 				&analyticsreporting.Metric{
 					Expression: strings.Trim(metric, " "),
@@ -249,6 +244,17 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 		}
 		return nil
 	}
+	// realtimerequest := &analytics.RealtimeDataQuery{
+	// 	Ids:     bt.config.RealTime.ViewId,
+	// 	Metrics: bt.config.RealTime.Metrics
+	// }
+	// if bt.config.RealTime.Dimensions != "" {
+	// 	realtimerequest.Dimensions = bt.config.RealTime.Dimensions
+	// }
+
+	// srv, err := analytics.New(bt.gclient)
+	// r, err := srv.Data.Realtime.Get(asd, asd).Dimensions(sdsad).Do()
+	// r.
 }
 
 func (bt *Ganalyticsbeat) fetchRequest(requests *analyticsreporting.GetReportsRequest, pageToken string) error {
@@ -389,7 +395,7 @@ func (bt *Ganalyticsbeat) buildDimensions(event common.MapStr, dimensions []stri
 func (bt *Ganalyticsbeat) getRowTimestamp(dimensions []string, row *analyticsreporting.ReportRow) time.Time {
 	var date_index int
 	var hour_index int
-	loc, err := time.LoadLocation(bt.config.ViewTimeZone)
+	loc, err := time.LoadLocation(bt.config.Reports.ViewTimeZone)
 	if err != nil {
 		logp.Err("Error loading timezone %v", err)
 	}
