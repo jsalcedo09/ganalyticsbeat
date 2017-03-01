@@ -8,28 +8,28 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+
 	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
 	"github.com/elastic/beats/libbeat/publisher"
-	"github.com/jsalcedo09/ganalyticsbeat/ganalytics"
 	"github.com/jsalcedo09/ganalyticsbeat/config"
+	"github.com/jsalcedo09/ganalyticsbeat/ganalytics"
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/analyticsreporting/v4"
 
-	"time"
+	b64 "encoding/base64"
 	"strconv"
 	"strings"
-	b64 "encoding/base64"
-	"errors"
+	"time"
 )
 
 const (
-	STATEFILE_NAME = "ganalyticsbeat.state"
+	STATEFILE_NAME      = "ganalyticsbeat.state"
 	OFFSET_PAST_MINUTES = 30
-	MAX_RETRIES = 30
+	MAX_RETRIES         = 30
 )
 
 type Ganalyticsbeat struct {
@@ -38,7 +38,7 @@ type Ganalyticsbeat struct {
 	client  publisher.Client
 	state   *ganalytics.StateFile
 	gclient *http.Client
-	beat *beat.Beat
+	beat    *beat.Beat
 }
 
 var timeStart, timeEnd, timeNow, fails, dropoff, totalevents int
@@ -53,13 +53,13 @@ func New(b *beat.Beat, cfg *common.Config) (beat.Beater, error) {
 
 	if config.Period.Minutes() < 1 || config.Period.Minutes() > 30 {
 		logp.Warn("Chosen period of %s is not valid. Changing to 5m", config.Period.String())
-		config.Period = 5 * time.Minute
+		//config.Period = 5 * time.Minute
 	}
 
 	bt := &Ganalyticsbeat{
-		done: make(chan struct{}),
+		done:   make(chan struct{}),
 		config: config,
-		beat: b,
+		beat:   b,
 	}
 
 	sfConf := map[string]string{
@@ -158,17 +158,17 @@ func (bt *Ganalyticsbeat) Run(b *beat.Beat) error {
 					} else {
 						dropoff = MAX_RETRIES
 					}
-					logp.Warn("Retrying in %s because of the error", time.Duration(bt.config.Period.Seconds() * float64(dropoff + 1)) * time.Second)
+					logp.Warn("Retrying in %s because of the error", time.Duration(bt.config.Period.Seconds()*float64(dropoff+1))*time.Second)
 				} else {
 					fails = 0
 					dropoff = 0
 				}
 				publishing = false
-			}else{
+			} else {
 				logp.Warn("Already publishing, wating for next tick...")
 			}
-		}else{
-			logp.Warn("%s to next run", time.Duration(bt.config.Period.Seconds() * float64(dropoff))*time.Second )
+		} else {
+			logp.Warn("%s to next run", time.Duration(bt.config.Period.Seconds()*float64(dropoff))*time.Second)
 			dropoff -= 1
 		}
 	}
@@ -193,21 +193,21 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 	requests := &analyticsreporting.GetReportsRequest{}
 	requests.ReportRequests = []*analyticsreporting.ReportRequest{
 		{
-			ViewId:bt.config.ViewId,
-			SamplingLevel:"LARGE",
-			PageSize:bt.config.BatchSize,
-			Dimensions:[]*analyticsreporting.Dimension{
+			ViewId:        bt.config.ViewId,
+			SamplingLevel: "LARGE",
+			PageSize:      bt.config.BatchSize,
+			Dimensions: []*analyticsreporting.Dimension{
 				{
-					Name:"ga:date",
+					Name: "ga:date",
 				},
 				{
-					Name:"ga:hour",
+					Name: "ga:hour",
 				},
 			},
-			DateRanges:[]*analyticsreporting.DateRange{
+			DateRanges: []*analyticsreporting.DateRange{
 				{
-					StartDate:tms.Format("2006-01-02"),
-					EndDate:tme.Format("2006-01-02"),
+					StartDate: tms.Format("2006-01-02"),
+					EndDate:   tme.Format("2006-01-02"),
 				},
 			},
 		},
@@ -217,7 +217,7 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 		for _, dimension := range strings.Split(bt.config.Dimensions, ",") {
 			requests.ReportRequests[0].Dimensions = append(requests.ReportRequests[0].Dimensions,
 				&analyticsreporting.Dimension{
-					Name:strings.Trim(dimension, " "),
+					Name: strings.Trim(dimension, " "),
 				},
 			)
 		}
@@ -227,18 +227,18 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 		for _, metric := range strings.Split(bt.config.Metrics, ",") {
 			requests.ReportRequests[0].Metrics = append(requests.ReportRequests[0].Metrics,
 				&analyticsreporting.Metric{
-					Expression:strings.Trim(metric, " "),
+					Expression: strings.Trim(metric, " "),
 				},
 			)
 		}
 	}
 	totalevents = 0
 	err = bt.fetchRequest(requests, "0")
-	if  err != nil {
+	if err != nil {
 		logp.Err("Unable to retrieve report: %v", err)
 		return err
 
-	}else{
+	} else {
 		bt.state.UpdateLastStartTS(timeStart)
 		bt.state.UpdateLastRequestTS(timeNow)
 
@@ -299,9 +299,9 @@ func (bt *Ganalyticsbeat) processReport(report *analyticsreporting.Report) error
 	for _, row := range report.Data.Rows {
 		ts := bt.getRowTimestamp(dimensions, row)
 		err := bt.processRow(ts, headers, dimensions, row)
-		if err != nil{
+		if err != nil {
 			logp.Warn("Error processing row %v", err)
-		}else{
+		} else {
 			bt.state.UpdateLastEndTS(int(ts.Unix()))
 			cont++
 		}
@@ -316,42 +316,37 @@ func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.M
 	cont = 0
 
 	for _, metric := range row.Metrics {
-			for i, value := range metric.Values {
-				key := bt.getRowKey(headers.MetricHeaderEntries[i].Name, dimensions, row, ts)
-				if bt.state.GetLastKeyEndTS(key) < int(ts.Unix()){
-					switch headers.MetricHeaderEntries[i].Type {
-					case "INTEGER", "PERCENT":
-						val, _ := strconv.ParseFloat(value, 64)
-						event := common.MapStr{
-							"@timestamp": common.Time(ts),
-							"type":       headers.MetricHeaderEntries[i].Name,
-							"value":      val,
-							"key": key,
-						}
-						event = bt.buildDimensions(event, dimensions, row)
-						events = append(events, event)
-						bt.client.PublishEvent(event)
-						cont++
-						totalevents += 1
-					default:
-						event := common.MapStr{
-							"@timestamp": common.Time(ts),
-							"type":       headers.MetricHeaderEntries[i].Name,
-							"value":      value,
-							"key": key,
-						}
-						event = bt.buildDimensions(event, dimensions, row)
-						events = append(events, event)
-						bt.client.PublishEvent(event)
-						cont++
-						totalevents += 1
-
-					}
-					bt.state.UpdateLastKeyEndTS(key, int(ts.Unix()))
-				}else{
-					return errors.New("Row already proceced")
+		for i, value := range metric.Values {
+			key := bt.getRowKey(headers.MetricHeaderEntries[i].Name, dimensions, row, ts)
+			switch headers.MetricHeaderEntries[i].Type {
+			case "INTEGER", "PERCENT":
+				val, _ := strconv.ParseFloat(value, 64)
+				event := common.MapStr{
+					"@timestamp": common.Time(ts),
+					"type":       headers.MetricHeaderEntries[i].Name,
+					"value":      val,
+					"key":        key,
 				}
+				event = bt.buildDimensions(event, dimensions, row)
+				events = append(events, event)
+				bt.client.PublishEvent(event)
+				cont++
+				totalevents += 1
+			default:
+				event := common.MapStr{
+					"@timestamp": common.Time(ts),
+					"type":       headers.MetricHeaderEntries[i].Name,
+					"value":      value,
+					"key":        key,
+				}
+				event = bt.buildDimensions(event, dimensions, row)
+				events = append(events, event)
+				bt.client.PublishEvent(event)
+				cont++
+				totalevents += 1
+
 			}
+		}
 
 	}
 
@@ -359,17 +354,18 @@ func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.M
 }
 
 func (bt *Ganalyticsbeat) getRowKey(header string, dimensions []string, row *analyticsreporting.ReportRow, ts time.Time) string {
-	key, _ := bt.beat.Config.Output["elasticsearch"].String("index",0)
-	key = fmt.Sprintf("%s_%s",key, header)
-	for i, dim := range dimensions{
+	key, _ := bt.beat.Config.Output["logstash"].String("index", 0)
+	key = fmt.Sprintf("%s_%s", key, header)
+	for i, dim := range dimensions {
 		switch dim {
-			case "ga:date", "ga:hour", "ga:minute":
-				continue
-			default:
-				formated_dim := strings.Replace(dim, ":", ".", -1)
-				key = fmt.Sprintf("%s_%s:%s",key, formated_dim, row.Dimensions[i])
+		case "ga:date", "ga:hour", "ga:minute":
+			continue
+		default:
+			formated_dim := strings.Replace(dim, ":", ".", -1)
+			key = fmt.Sprintf("%s_%s:%s", key, formated_dim, row.Dimensions[i])
 		}
 	}
+	key = fmt.Sprintf("%s_%s", key, strconv.Itoa(int(ts.Unix())))
 	return b64.StdEncoding.EncodeToString([]byte(key))
 }
 
@@ -378,13 +374,13 @@ func (bt *Ganalyticsbeat) getReportHeaders(report *analyticsreporting.Report) *a
 }
 
 func (bt *Ganalyticsbeat) buildDimensions(event common.MapStr, dimensions []string, row *analyticsreporting.ReportRow) common.MapStr {
-	for i, dim := range dimensions{
+	for i, dim := range dimensions {
 		switch dim {
-			case "ga:date", "ga:hour", "ga:minute":
-				continue
-			default:
-				formated_dim := strings.Replace(dim, ":", ".", -1)
-				event.Put(formated_dim, row.Dimensions[i])
+		case "ga:date", "ga:hour", "ga:minute":
+			continue
+		default:
+			formated_dim := strings.Replace(dim, ":", ".", -1)
+			event.Put(formated_dim, row.Dimensions[i])
 		}
 	}
 	return event
@@ -399,10 +395,10 @@ func (bt *Ganalyticsbeat) getRowTimestamp(dimensions []string, row *analyticsrep
 	}
 	for i, dim := range dimensions {
 		switch dim {
-			case "ga:date":
-				date_index = i
-			case "ga:hour":
-				hour_index = i
+		case "ga:date":
+			date_index = i
+		case "ga:hour":
+			hour_index = i
 		}
 	}
 
@@ -430,7 +426,7 @@ func (bt *Ganalyticsbeat) getClient(ctx context.Context, config *oauth2.Config, 
 		jsonString, _ := json.Marshal(tok)
 		logp.Info("Token: %s", jsonString)
 		return config.Client(ctx, tok)
-	}else {
+	} else {
 		tok, err := bt.tokenFromFile(cacheFile)
 		if err != nil {
 			tok = bt.getTokenFromConfig()
@@ -444,7 +440,7 @@ func (bt *Ganalyticsbeat) getClient(ctx context.Context, config *oauth2.Config, 
 // It returns the retrieved Token.
 func (bt *Ganalyticsbeat) getTokenFromWeb(config *oauth2.Config) *oauth2.Token {
 	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
-	fmt.Printf("Go to the following link in your browser then type the " +
+	fmt.Printf("Go to the following link in your browser then type the "+
 		"authorization code: \n%v\n", authURL)
 
 	var code string
@@ -469,7 +465,6 @@ func (bt *Ganalyticsbeat) getTokenFromConfig() *oauth2.Token {
 	}
 	return tok
 }
-
 
 // tokenCacheFile generates credential file path/filename.
 // It returns the generated credential path/filename.
@@ -516,5 +511,3 @@ func (bt *Ganalyticsbeat) Stop() {
 	bt.client.Close()
 	close(bt.done)
 }
-
-
