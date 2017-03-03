@@ -1,8 +1,10 @@
 package beater
 
 import (
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,9 +20,9 @@ import (
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	"google.golang.org/api/analytics/v3"
 	"google.golang.org/api/analyticsreporting/v4"
 
-	b64 "encoding/base64"
 	"strconv"
 	"strings"
 	"time"
@@ -134,30 +136,50 @@ func (bt *Ganalyticsbeat) Run(b *beat.Beat) error {
 			if !publishing {
 				publishing = true
 				timeNow = int(time.Now().UTC().Unix())
-
-				if bt.state.GetLastStartTS() != 0 {
-					timeStart = bt.state.GetLastEndTS() + 1 // last end TS as per statefile + 1 second
-				} else {
-					t2, err := time.Parse("2006-01-02", bt.config.Reports.InitialDate)
-					if err != nil {
-						logp.Err("Error parsing Initial Date from config %v", err)
-					}
-					timeStart = int(t2.Unix())
-				}
-				timeEnd := timeNow
-				err := bt.DownloadAndPublish(timeNow, timeStart, timeEnd)
-				if err != nil {
-					fails += 1
-					if dropoff < MAX_RETRIES {
-						dropoff += fails
+				if bt.config.AnalyticType == "reports" {
+					logp.Info("Running Reports")
+					if bt.state.GetLastStartTS() != 0 {
+						timeStart = bt.state.GetLastEndTS() + 1 // last end TS as per statefile + 1 second
 					} else {
-						dropoff = MAX_RETRIES
+						t2, err := time.Parse("2006-01-02", bt.config.Reports.InitialDate)
+						if err != nil {
+							logp.Err("Error parsing Initial Date from config %v", err)
+						}
+						timeStart = int(t2.Unix())
 					}
-					logp.Warn("Retrying in %s because of the error", time.Duration(bt.config.Period.Seconds()*float64(dropoff+1))*time.Second)
+					timeEnd := timeNow
+					err := bt.DownloadAndPublish(timeNow, timeStart, timeEnd)
+					if err != nil {
+						fails += 1
+						if dropoff < MAX_RETRIES {
+							dropoff += fails
+						} else {
+							dropoff = MAX_RETRIES
+						}
+						logp.Warn("Retrying in %s because of the error", time.Duration(bt.config.Period.Seconds()*float64(dropoff+1))*time.Second)
+					} else {
+						fails = 0
+						dropoff = 0
+					}
+				} else if bt.config.AnalyticType == "realtime" {
+					logp.Info("Running Realtime data analytics")
+					err := bt.DownloadRealtimeAndPublish()
+					if err != nil {
+						fails++
+						if dropoff < MAX_RETRIES {
+							dropoff += fails
+						} else {
+							dropoff = MAX_RETRIES
+						}
+						logp.Warn("Retrying in %s because of the error", time.Duration(bt.config.Period.Seconds()*float64(dropoff+1))*time.Second)
+					} else {
+						fails = 0
+						dropoff = 0
+					}
 				} else {
-					fails = 0
-					dropoff = 0
+					logp.Warn("No analytic type selected")
 				}
+
 				publishing = false
 			} else {
 				logp.Warn("Already publishing, wating for next tick...")
@@ -257,6 +279,28 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 	// r.
 }
 
+func (bt *Ganalyticsbeat) DownloadRealtimeAndPublish() error {
+	// realtimerequest := &analytics.RealtimeDataQuery{
+	// 	Ids:     bt.config.RealTime.ViewId,
+	// 	Metrics: bt.config.RealTime.Metrics
+	// }
+	// if bt.config.RealTime.Dimensions != "" {
+	// 	realtimerequest.Dimensions = bt.config.RealTime.Dimensions
+	// }
+
+	srv, err := analytics.New(bt.gclient)
+	r := srv.Data.Realtime.Get(bt.config.RealTime.ViewId, bt.config.RealTime.Metrics)
+	if err != nil {
+		logp.Err("Exception from ga realtime API %v", err)
+	}
+	if bt.config.RealTime.Dimensions != "" {
+		r.Dimensions(bt.config.RealTime.Dimensions)
+	}
+	res, err := r.Do()
+	logp.Info("response %+v", res)
+	return nil
+}
+
 func (bt *Ganalyticsbeat) fetchRequest(requests *analyticsreporting.GetReportsRequest, pageToken string) error {
 	requests.ReportRequests[0].PageToken = pageToken
 	srv, err := analyticsreporting.New(bt.gclient)
@@ -324,6 +368,7 @@ func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.M
 	for _, metric := range row.Metrics {
 		for i, value := range metric.Values {
 			key := bt.getRowKey(headers.MetricHeaderEntries[i].Name, dimensions, row, ts)
+			indexname, _ := bt.beat.Config.Output["logstash"].String("index", 0)
 			switch headers.MetricHeaderEntries[i].Type {
 			case "INTEGER", "PERCENT":
 				val, _ := strconv.ParseFloat(value, 64)
@@ -332,6 +377,7 @@ func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.M
 					"type":       headers.MetricHeaderEntries[i].Name,
 					"value":      val,
 					"key":        key,
+					"indexname":  indexname,
 				}
 				event = bt.buildDimensions(event, dimensions, row)
 				events = append(events, event)
@@ -344,6 +390,7 @@ func (bt *Ganalyticsbeat) processRow(ts time.Time, headers *analyticsreporting.M
 					"type":       headers.MetricHeaderEntries[i].Name,
 					"value":      value,
 					"key":        key,
+					"indexname":  indexname,
 				}
 				event = bt.buildDimensions(event, dimensions, row)
 				events = append(events, event)
@@ -372,7 +419,9 @@ func (bt *Ganalyticsbeat) getRowKey(header string, dimensions []string, row *ana
 		}
 	}
 	key = fmt.Sprintf("%s_%s", key, strconv.Itoa(int(ts.Unix())))
-	return b64.StdEncoding.EncodeToString([]byte(key))
+	h := sha1.New()
+	io.WriteString(h, key)
+	return fmt.Sprintf("%x", h.Sum(nil)) //b64.StdEncoding.EncodeToString([]byte(key))
 }
 
 func (bt *Ganalyticsbeat) getReportHeaders(report *analyticsreporting.Report) *analyticsreporting.MetricHeader {
