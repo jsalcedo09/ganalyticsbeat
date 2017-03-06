@@ -1,8 +1,6 @@
 package fileout
 
 import (
-	"encoding/json"
-
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/common/op"
 	"github.com/elastic/beats/libbeat/logp"
@@ -14,12 +12,13 @@ func init() {
 }
 
 type fileOutput struct {
-	beatName string
-	rotator  logp.FileRotator
+	beat    common.BeatInfo
+	rotator logp.FileRotator
+	codec   outputs.Codec
 }
 
 // New instantiates a new file output instance.
-func New(beatName string, cfg *common.Config, _ int) (outputs.Outputer, error) {
+func New(beat common.BeatInfo, cfg *common.Config, _ int) (outputs.Outputer, error) {
 	config := defaultConfig
 	if err := cfg.Unpack(&config); err != nil {
 		return nil, err
@@ -29,7 +28,7 @@ func New(beatName string, cfg *common.Config, _ int) (outputs.Outputer, error) {
 	cfg.SetInt("flush_interval", -1, -1)
 	cfg.SetInt("bulk_max_size", -1, -1)
 
-	output := &fileOutput{beatName: beatName}
+	output := &fileOutput{beat: beat}
 	if err := output.init(config); err != nil {
 		return nil, err
 	}
@@ -37,11 +36,21 @@ func New(beatName string, cfg *common.Config, _ int) (outputs.Outputer, error) {
 }
 
 func (out *fileOutput) init(config config) error {
+	var err error
+
 	out.rotator.Path = config.Path
 	out.rotator.Name = config.Filename
 	if out.rotator.Name == "" {
-		out.rotator.Name = out.beatName
+		out.rotator.Name = out.beat.Beat
 	}
+
+	codec, err := outputs.CreateEncoder(config.Codec)
+	if err != nil {
+		return err
+	}
+
+	out.codec = codec
+
 	logp.Info("File output path set to: %v", out.rotator.Path)
 	logp.Info("File output base filename set to: %v", out.rotator.Name)
 
@@ -53,7 +62,7 @@ func (out *fileOutput) init(config config) error {
 	logp.Info("Number of files set to: %v", keepfiles)
 	out.rotator.KeepFiles = &keepfiles
 
-	err := out.rotator.CreateDirectory()
+	err = out.rotator.CreateDirectory()
 	if err != nil {
 		return err
 	}
@@ -76,16 +85,16 @@ func (out *fileOutput) PublishEvent(
 	opts outputs.Options,
 	data outputs.Data,
 ) error {
-	jsonEvent, err := json.Marshal(data.Event)
-	if err != nil {
-		// mark as success so event is not sent again.
-		op.SigCompleted(sig)
+	var serializedEvent []byte
+	var err error
 
-		logp.Err("Fail to json encode event(%v): %#v", err, data.Event)
+	serializedEvent, err = out.codec.Encode(data.Event)
+	if err != nil {
+		op.SigCompleted(sig)
 		return err
 	}
 
-	err = out.rotator.WriteLine(jsonEvent)
+	err = out.rotator.WriteLine(serializedEvent)
 	if err != nil {
 		if opts.Guaranteed {
 			logp.Critical("Unable to write events to file: %s", err)

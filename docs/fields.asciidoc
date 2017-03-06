@@ -9,7 +9,7 @@ This file is generated! See _meta/fields.yml and scripts/generate_field_docs.py
 [partintro]
 
 --
-This document describes the fields that are exported by Ganalyticsbeat. They are
+This document describes the fields that are exported by Libbeat. They are
 grouped in the following categories:
 
 * <<exported-fields-beat>>
@@ -65,7 +65,7 @@ Arbitrary tags that can be set per Beat and per transaction type.
 [float]
 === fields
 
-type: dict
+type: object
 
 Contains user configurable fields.
 

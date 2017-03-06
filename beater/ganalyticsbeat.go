@@ -53,6 +53,11 @@ func New(b *beat.Beat, cfg *common.Config) (beat.Beater, error) {
 		return nil, fmt.Errorf("Error reading config file: %v", err)
 	}
 
+	if (config.Period.Minutes() < 1 || config.Period.Minutes() > 30) && config.AnalyticType == "reports" {
+		logp.Warn("Chosen period of %s is not valid. Changing to 5m", config.Period.String())
+		config.Period = 5 * time.Minute
+	}
+
 	bt := &Ganalyticsbeat{
 		done:   make(chan struct{}),
 		config: config,
@@ -266,17 +271,6 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 		}
 		return nil
 	}
-	// realtimerequest := &analytics.RealtimeDataQuery{
-	// 	Ids:     bt.config.RealTime.ViewId,
-	// 	Metrics: bt.config.RealTime.Metrics
-	// }
-	// if bt.config.RealTime.Dimensions != "" {
-	// 	realtimerequest.Dimensions = bt.config.RealTime.Dimensions
-	// }
-
-	// srv, err := analytics.New(bt.gclient)
-	// r, err := srv.Data.Realtime.Get(asd, asd).Dimensions(sdsad).Do()
-	// r.
 }
 
 func (bt *Ganalyticsbeat) DownloadRealtimeAndPublish() error {
@@ -296,8 +290,13 @@ func (bt *Ganalyticsbeat) DownloadRealtimeAndPublish() error {
 	if bt.config.RealTime.Dimensions != "" {
 		r.Dimensions(bt.config.RealTime.Dimensions)
 	}
+	r.MaxResults(10000)
 	res, err := r.Do()
-	logp.Info("response %+v", res)
+	if err != nil {
+		logp.Err("Exception from ga realtime API %v", err)
+		return nil
+	}
+	bt.processRealtime(res)
 	return nil
 }
 
@@ -338,7 +337,48 @@ func (bt *Ganalyticsbeat) fetchRequest(requests *analyticsreporting.GetReportsRe
 	return nil
 
 }
-
+func (bt *Ganalyticsbeat) processRealtime(response *analytics.RealtimeData) error {
+	var cont int
+	cont = 0
+	loc, err := time.LoadLocation(bt.config.Reports.ViewTimeZone)
+	if err != nil {
+		logp.Err("Error loading timezone %v", err)
+	}
+	ts, err := time.Parse("2006 January 1 15:04 -0700", fmt.Sprintf("%s %s %s %s:%s %s",
+		strconv.Itoa(time.Now().Year()),
+		time.Now().Month(),
+		strconv.Itoa(time.Now().Day()),
+		strconv.Itoa(time.Now().Hour()),
+		"00", //Minute 00
+		time.Now().In(loc).Format("-0700")))
+	logp.Info("%s", ts)
+	var events []common.MapStr
+	headers := response.ColumnHeaders
+	rows := response.Rows
+	for i, v := range rows {
+		key := bt.getRealtimeKey(ts, headers, rows[i])
+		indexname, _ := bt.beat.Config.Output["logstash"].String("index", 0)
+		event := common.MapStr{
+			"@timestamp": common.Time(ts),
+			"key":        key,
+			"indexname":  indexname,
+		}
+		for ci, cv := range headers {
+			if cv.ColumnType == "DIMENSION" {
+				formated_dim := strings.Replace(cv.Name, ":", ".", -1)
+				event.Put(formated_dim, v[ci])
+			} else if cv.ColumnType == "METRIC" {
+				event.Put("type", cv.Name)
+				event.Put("value", v[ci])
+			}
+		}
+		logp.Info("%+v", event)
+		events = append(events, event)
+		bt.client.PublishEvent(event)
+		cont++
+	}
+	return nil
+}
 func (bt *Ganalyticsbeat) processReport(report *analyticsreporting.Report) error {
 	headers := bt.getReportHeaders(report)
 	dimensions := report.ColumnHeader.Dimensions
@@ -416,6 +456,22 @@ func (bt *Ganalyticsbeat) getRowKey(header string, dimensions []string, row *ana
 		default:
 			formated_dim := strings.Replace(dim, ":", ".", -1)
 			key = fmt.Sprintf("%s_%s:%s", key, formated_dim, row.Dimensions[i])
+		}
+	}
+	key = fmt.Sprintf("%s_%s", key, strconv.Itoa(int(ts.Unix())))
+	h := sha1.New()
+	io.WriteString(h, key)
+	return fmt.Sprintf("%x", h.Sum(nil)) //b64.StdEncoding.EncodeToString([]byte(key))
+}
+func (bt *Ganalyticsbeat) getRealtimeKey(ts time.Time, headers []*analytics.RealtimeDataColumnHeaders, row []string) string {
+	key, _ := bt.beat.Config.Output["logstash"].String("index", 0)
+	for i, dim := range headers {
+		switch dim.ColumnType {
+		case "METRIC":
+			continue
+		default:
+			formatedDim := strings.Replace(dim.Name, ":", ".", -1)
+			key = fmt.Sprintf("%s_%s:%s", key, formatedDim, row[i])
 		}
 	}
 	key = fmt.Sprintf("%s_%s", key, strconv.Itoa(int(ts.Unix())))

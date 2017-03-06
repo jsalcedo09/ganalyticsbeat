@@ -31,6 +31,7 @@ package beat
 
 import (
 	cryptRand "crypto/rand"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -42,18 +43,27 @@ import (
 	"strings"
 	"time"
 
+	"github.com/satori/go.uuid"
+
+	"github.com/elastic/beats/filebeat/input/file"
 	"github.com/elastic/beats/libbeat/cfgfile"
 	"github.com/elastic/beats/libbeat/common"
+	"github.com/elastic/beats/libbeat/dashboards/dashboards"
 	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/libbeat/monitoring/report"
+	"github.com/elastic/beats/libbeat/outputs/elasticsearch"
 	"github.com/elastic/beats/libbeat/paths"
+	"github.com/elastic/beats/libbeat/plugin"
 	"github.com/elastic/beats/libbeat/processors"
 	"github.com/elastic/beats/libbeat/publisher"
 	svc "github.com/elastic/beats/libbeat/service"
-	"github.com/satori/go.uuid"
 
 	// Register default processors.
 	_ "github.com/elastic/beats/libbeat/processors/actions"
 	_ "github.com/elastic/beats/libbeat/processors/add_cloud_metadata"
+
+	// Register default monitoring reporting
+	_ "github.com/elastic/beats/libbeat/monitoring/report/elasticsearch"
 )
 
 // Beater is the interface that must be implemented by every Beat. A Beater
@@ -84,9 +94,7 @@ type Creator func(*Beat, *common.Config) (Beater, error)
 // Beat contains the basic beat data and the publisher client used to publish
 // events.
 type Beat struct {
-	Name      string              // Beat name.
-	Version   string              // Beat version number. Defaults to the libbeat version when an implementation does not set a version.
-	UUID      uuid.UUID           // ID assigned to a Beat instance.
+	Info      common.BeatInfo     // beat metadata.
 	RawConfig *common.Config      // Raw config that can be unpacked to get Beat specific config data.
 	Config    BeatConfig          // Common Beat configuration data.
 	Publisher publisher.Publisher // Publisher
@@ -96,13 +104,16 @@ type Beat struct {
 type BeatConfig struct {
 	Shipper    publisher.ShipperConfig   `config:",inline"`
 	Output     map[string]*common.Config `config:"output"`
+	Monitoring *common.Config            `config:"xpack.monitoring"`
 	Logging    logp.Logging              `config:"logging"`
 	Processors processors.PluginConfig   `config:"processors"`
 	Path       paths.Path                `config:"path"`
+	Dashboards *common.Config            `config:"dashboards"`
 }
 
 var (
 	printVersion = flag.Bool("version", false, "Print the version and exit")
+	setup        = flag.Bool("setup", false, "Load the sample Kibana dashboards")
 )
 
 var debugf = logp.MakeDebug("beat")
@@ -133,25 +144,44 @@ func init() {
 // implementation. bt is the `Creator` callback for creating a new beater
 // instance.
 func Run(name, version string, bt Creator) error {
-	return handleError(newBeat(name, version).launch(bt))
+	return handleError(func() error {
+		b, err := newBeat(name, version)
+		if err != nil {
+			return err
+		}
+		return b.launch(bt)
+	}())
 }
 
 // newBeat creates a new beat instance
-func newBeat(name, version string) *Beat {
+func newBeat(name, version string) (*Beat, error) {
 	if version == "" {
 		version = defaultBeatVersion
 	}
 
-	return &Beat{
-		Name:    name,
-		Version: version,
-		UUID:    uuid.NewV4(),
+	hostname, err := os.Hostname()
+	if err != nil {
+		return nil, err
 	}
+
+	return &Beat{
+		Info: common.BeatInfo{
+			Beat:     name,
+			Version:  version,
+			Name:     hostname,
+			Hostname: hostname,
+			UUID:     uuid.NewV4(),
+		},
+	}, nil
 }
 
 func (b *Beat) launch(bt Creator) error {
 	err := b.handleFlags()
 	if err != nil {
+		return err
+	}
+
+	if err := plugin.Initialize(); err != nil {
 		return err
 	}
 
@@ -164,7 +194,7 @@ func (b *Beat) launch(bt Creator) error {
 
 	// load the beats config section
 	var sub *common.Config
-	configName := strings.ToLower(b.Name)
+	configName := strings.ToLower(b.Info.Beat)
 	if b.RawConfig.HasField(configName) {
 		sub, err = b.RawConfig.Child(configName, -1)
 		if err != nil {
@@ -174,14 +204,14 @@ func (b *Beat) launch(bt Creator) error {
 		sub = common.NewConfig()
 	}
 
-	logp.Info("Setup Beat: %s; Version: %s", b.Name, b.Version)
+	logp.Info("Setup Beat: %s; Version: %s", b.Info.Beat, b.Info.Version)
 	processors, err := processors.New(b.Config.Processors)
 	if err != nil {
 		return fmt.Errorf("error initializing processors: %v", err)
 	}
 
 	debugf("Initializing output plugins")
-	publisher, err := publisher.New(b.Name, b.Version, b.Config.Output, b.Config.Shipper, processors)
+	publisher, err := publisher.New(b.Info, b.Config.Output, b.Config.Shipper, processors)
 	if err != nil {
 		return fmt.Errorf("error initializing publisher: %v", err)
 	}
@@ -196,6 +226,14 @@ func (b *Beat) launch(bt Creator) error {
 		return err
 	}
 
+	if b.Config.Monitoring.Enabled() {
+		reporter, err := report.New(b.Info, b.Config.Monitoring, b.Config.Output)
+		if err != nil {
+			return err
+		}
+		defer reporter.Stop()
+	}
+
 	// If -configtest was specified, exit now prior to run.
 	if cfgfile.IsTestConfig() {
 		fmt.Println("Config OK")
@@ -204,8 +242,13 @@ func (b *Beat) launch(bt Creator) error {
 
 	svc.HandleSignals(beater.Stop)
 
-	logp.Info("%s start running.", b.Name)
-	defer logp.Info("%s stopped.", b.Name)
+	err = b.loadDashboards()
+	if err != nil {
+		return err
+	}
+
+	logp.Info("%s start running.", b.Info.Beat)
+	defer logp.Info("%s stopped.", b.Info.Beat)
 	defer logp.LogTotalExpvars(&b.Config.Logging)
 
 	return beater.Run(b)
@@ -216,7 +259,7 @@ func (b *Beat) launch(bt Creator) error {
 func (b *Beat) handleFlags() error {
 	// Due to a dependence upon the beat name, the default config file path
 	// must be updated prior to CLI flag handling.
-	err := cfgfile.ChangeDefaultCfgfileFlag(b.Name)
+	err := cfgfile.ChangeDefaultCfgfileFlag(b.Info.Beat)
 	if err != nil {
 		return fmt.Errorf("failed to set default config file path: %v", err)
 	}
@@ -224,13 +267,17 @@ func (b *Beat) handleFlags() error {
 
 	if *printVersion {
 		fmt.Printf("%s version %s (%s), libbeat %s\n",
-			b.Name, b.Version, runtime.GOARCH, defaultBeatVersion)
+			b.Info.Beat, b.Info.Version, runtime.GOARCH, defaultBeatVersion)
 		return GracefulExit
 	}
 
+	if err := logp.HandleFlags(b.Info.Beat); err != nil {
+		return err
+	}
 	if err := cfgfile.HandleFlags(); err != nil {
 		return err
 	}
+
 	return handleFlags(b)
 }
 
@@ -251,12 +298,16 @@ func (b *Beat) configure() error {
 		return fmt.Errorf("error unpacking config data: %v", err)
 	}
 
+	if name := b.Config.Shipper.Name; name != "" {
+		b.Info.Name = name
+	}
+
 	err = paths.InitPaths(&b.Config.Path)
 	if err != nil {
 		return fmt.Errorf("error setting default paths: %v", err)
 	}
 
-	err = logp.Init(b.Name, &b.Config.Logging)
+	err = logp.Init(b.Info.Beat, &b.Config.Logging)
 	if err != nil {
 		return fmt.Errorf("error initializing logging: %v", err)
 	}
@@ -266,11 +317,122 @@ func (b *Beat) configure() error {
 	// log paths values to help with troubleshooting
 	logp.Info(paths.Paths.String())
 
+	err = b.loadMeta()
+	if err != nil {
+		return err
+	}
+
+	logp.Info("Beat UUID: %v", b.Info.UUID)
+
 	if b.Config.Shipper.MaxProcs != nil {
 		maxProcs := *b.Config.Shipper.MaxProcs
 		if maxProcs > 0 {
 			runtime.GOMAXPROCS(maxProcs)
 		}
+	}
+
+	return nil
+}
+
+func (b *Beat) loadMeta() error {
+	type meta struct {
+		UUID uuid.UUID `json:"uuid"`
+	}
+
+	metaPath := paths.Resolve(paths.Data, "meta.json")
+	logp.Info("Beat metadata path: %v", metaPath)
+
+	f, err := openRegular(metaPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("Beat meta file failed to open: %s", err)
+	}
+
+	if err == nil {
+		m := meta{}
+		if err := json.NewDecoder(f).Decode(&m); err != nil {
+			f.Close()
+			return fmt.Errorf("Beat meta file reading error: %v", err)
+		}
+
+		f.Close()
+		valid := !uuid.Equal(m.UUID, uuid.Nil)
+		if valid {
+			b.Info.UUID = m.UUID
+			return nil
+		}
+	}
+
+	// file does not exist or UUID is invalid, let's create a new one
+
+	// write temporary file first
+	tempFile := metaPath + ".new"
+	f, err = os.OpenFile(tempFile, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("Failed to create Beat meta file: %s", err)
+	}
+
+	err = json.NewEncoder(f).Encode(meta{UUID: b.Info.UUID})
+	f.Close()
+	if err != nil {
+		return fmt.Errorf("Beat meta file failed to write: %s", err)
+	}
+
+	// move temporary file into final location
+	err = file.SafeFileRotate(metaPath, tempFile)
+	return err
+}
+
+func openRegular(filename string) (*os.File, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return f, err
+	}
+
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+
+	if !info.Mode().IsRegular() {
+		f.Close()
+		if info.IsDir() {
+			return nil, fmt.Errorf("%s is a directory", filename)
+		}
+		return nil, fmt.Errorf("%s is not a regular file", filename)
+	}
+
+	return f, nil
+}
+
+func (b *Beat) loadDashboards() error {
+	if *setup {
+		// -setup implies dashboards.enabled=true
+		if b.Config.Dashboards == nil {
+			b.Config.Dashboards = common.NewConfig()
+		}
+		err := b.Config.Dashboards.SetBool("enabled", -1, true)
+		if err != nil {
+			return fmt.Errorf("Error setting dashboard.enabled=true: %v", err)
+		}
+	}
+
+	if b.Config.Dashboards != nil && b.Config.Dashboards.Enabled() {
+		esConfig := b.Config.Output["elasticsearch"]
+		if esConfig == nil || !esConfig.Enabled() {
+			return fmt.Errorf("Dashboard loading requested but the Elasticsearch output is not configured/enabled")
+		}
+		esClient, err := elasticsearch.NewConnectedClient(esConfig)
+		if err != nil {
+			return fmt.Errorf("Error creating ES client: %v", err)
+		}
+		defer esClient.Close()
+
+		err = dashboards.ImportDashboards(b.Info.Beat, b.Info.Version, esClient, b.Config.Dashboards)
+		if err != nil {
+			return fmt.Errorf("Error importing Kibana dashboards: %v", err)
+		}
+		logp.Info("Kibana dashboards successfully loaded.")
 	}
 
 	return nil

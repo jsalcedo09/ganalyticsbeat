@@ -12,7 +12,7 @@ env:
   global:
     # Cross-compile for amd64 only to speed up testing.
     - GOX_FLAGS="-arch amd64"
-    - DOCKER_COMPOSE_VERSION: 1.9.0
+    - DOCKER_COMPOSE_VERSION: 1.11.1
     - &go_version 1.7.4
 
 matrix:
@@ -74,10 +74,10 @@ matrix:
 
     # Generators
     - os: linux
-      env: TARGETS="-C generate/metricbeat/metricset test"
+      env: TARGETS="-C generator/metricbeat test"
       go: *go_version
     - os: linux
-      env: TARGETS="-C generate/beat test"
+      env: TARGETS="-C generator/beat test"
       go: *go_version
 
 addons:
@@ -88,6 +88,8 @@ addons:
       - geoip-database
 
 before_install:
+  - umask 022
+  - chmod -R go-w $GOPATH/src/github.com/elastic/beats
   # Docker-compose installation
   - sudo rm /usr/local/bin/docker-compose || true
   - curl -L https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-`uname -s`-`uname -m` > docker-compose

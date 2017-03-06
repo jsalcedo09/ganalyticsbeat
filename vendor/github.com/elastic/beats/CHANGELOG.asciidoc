@@ -14,41 +14,89 @@ https://github.com/elastic/beats/compare/v5.1.1...master[Check the HEAD diff]
 
 *Affecting all Beats*
 
+- Change beat generator. Use `$GOPATH/src/github.com/elastic/beats/script/generate.py` to generate a beat. {pull}3452[3452]
+- Configuration files must not be writable by other users. {pull}3544[3544]
+
 *Filebeat*
+- Always use absolute path for event and registry. This can lead to issues when relative paths were used before. {pull}3328[3328]
 
 *Heartbeat*
 
 *Metricbeat*
+- Linux cgroup metrics are now enabled by default for the system process
+  metricset. The configuration option for the feature was renamed from
+  `cgroups` to `process.cgroups.enabled`. {pull}3519[3519]
+- Change fieldnames couchbase.node.couch.*.actual_disk_size.* to couchbase.node.couch.*.disk_size.* {pull}3545[3545]
 
 *Packetbeat*
 
 *Winlogbeat*
+
 
 ==== Bugfixes
 
 *Affecting all Beats*
 
+- Add `_id`, `_type`, `_index` and `_score` fields in the generated index pattern. {pull}3282[3282]
+- Fix potential elasticsearch output URL parsing error if protocol scheme is missing. {pull}3671[3671]
+
 *Filebeat*
+- Always use absolute path for event and registry. {pull}3328[3328]
+- Raise an exception in case there is a syntax error in one of the configuration files available under
+  filebeat.config_dir. {pull}3573[3573]
+- Fix empty registry file on machine crash. {issue}3537[3537]
 
 *Heartbeat*
 
 *Metricbeat*
+
+- Fix go routine leak in docker module. {pull}3492[3492]
+- Fix bug docker module hanging when docker container killed. {issue}3610[3610]
+- Set timeout to period instead of 1s by default as documented.
 
 *Packetbeat*
 
 *Winlogbeat*
 
+
 ==== Added
 
 *Affecting all Beats*
+
+- Files created by Beats (logs, registry, file output) will have 0600 permissions. {pull}3387[3387].
+- RPM/deb packages will now install the config file with 0600 permissions. {pull}3382[3382]
+- Add the option to pass custom HTTP headers to the Elasticsearch output. {pull}3400[3400]
+- Unify `regexp` and `contains` conditionals, for both to support array of strings and convert numbers to strings if required. {pull}3469[3469]
+- Add the option to load the sample dashboards during the Beat startup phase. {pull}3506[3506]
+- Disabled date detection in Elasticsearch index templates. Date fields must be explicitly defined in index templates. {pull}3528[3528]
+- Using environment variables in the configuration file is now GA, instead of experimental. {pull}3525[3525]
+- Initialize a beats UUID from file on startup. {pull}3615[3615]
+
+*Filebeat*
+
+- Add the `pipeline` config option at the prospector level, for configuring the Ingest Node pipeline ID. {pull}3433[3433]
+- Update regular expressions used for matching file names or lines (multiline, include/exclude functionality) to new matchers improving performance of simple string matches. {pull}3469[3469]
+- The `symlinks` and `harverster_limit` settings are now GA, instead of experimental. {pull}3525[3525]
+- close_timeout is also applied when the output is blocking. {pull}3511[3511]
 
 *Heartbeat*
 
 *Metricbeat*
 
-*Filebeat*
+- Add experimental dbstats metricset to MongoDB module. {pull}3228[3228]
+- Use persistent, direct connections to the configured nodes for MongoDB module. {pull}3228[3228]
+- Add dynamic configuration reloading for modules. {pull}3281[3281]
+- Add docker health metricset {pull}3357[3357]
+- Add docker image metricset {pull}3467[3467]
+- System module uses new matchers for white-listing processes. {pull}3469[3469]
+- Add Beta CEPH module with health metricset. {pull}3311[3311]
+- Add Beta php_fpm module with pool metricset. {pull}3415[3415]
+- The Docker, Kafka, and Prometheus modules are now Beta, instead of experimental. {pull}3525[3525]
+- The HAProxy module is now GA, instead of experimental. {pull}3525[3525]
 
 *Packetbeat*
+- Add `fields` and `fields_under_root` to packetbeat protocols configurations. {pull}3518[3518]
+- Add list style packetbeat protocols configurations. This change supports specifying multiple configurations of the same protocol analyzer. {pull]3518[3518]
 
 *Winlogbeat*
 
@@ -56,15 +104,25 @@ https://github.com/elastic/beats/compare/v5.1.1...master[Check the HEAD diff]
 
 *Affecting all Beats*
 
+- Usage of field _type is deprecated. It should not be used in queries or dashboards. {pull}3409[3409]
+
 *Filebeat*
+
+- The experimental `publish_async` option is now deprecated and is planned to be removed in 6.0. {pull}3525[3525]
 
 *Heartbeat*
 
 *Metricbeat*
 
 *Packetbeat*
+- Deprecate dictionary style protocols configuration. {pull}3518[3518]
 
 *Winlogbeat*
+
+==== Knwon Issue
+
+*Filebeat*
+- Prospector reloading only works properly with new files. {pull}3546[3546]
 
 ////////////////////////////////////////////////////////////
 
@@ -120,6 +178,7 @@ https://github.com/elastic/beats/compare/v5.1.2...v5.2.0[View commits]
 - Experimental Prometheus module. {pull}3202[3202]
 - Add system socket module that reports all TCP sockets. {pull}3246[3246]
 - Kafka consumer groups metricset. {pull}3240[3240]
+- Add jolokia module with dynamic jmx metricset. {pull}3570[3570]
 
 *Winlogbeat*
 
@@ -143,7 +202,6 @@ https://github.com/elastic/beats/compare/v5.1.1...v5.1.2[View commits]
 *Winlogbeat*
 
 - Fix for "The array bounds are invalid" error when reading large events. {issue}3076[3076]
-
 
 [[release-notes-5.1.1]]
 === Beats version 5.1.1
@@ -186,7 +244,7 @@ https://github.com/elastic/beats/compare/v5.0.2...v5.1.1[View commits]
 - Add support for MongoDB 3.4 and WiredTiger metrics. {pull}2999[2999]
 - Add experimental kafka module with partition metricset. {pull}2969[2969]
 - Add raw config option for mysql/status metricset. {pull}3001[3001]
-- Add command fileds for mysql/status metricset. {pull}3251[3251]
+- Add command fields for mysql/status metricset. {pull}3251[3251]
 
 *Filebeat*
 

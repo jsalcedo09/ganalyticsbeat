@@ -4,6 +4,7 @@ import (
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/common/op"
 	"github.com/elastic/beats/libbeat/logp"
+	"github.com/elastic/beats/libbeat/monitoring"
 )
 
 type Options struct {
@@ -52,7 +53,7 @@ type BulkOutputer interface {
 }
 
 // Create and initialize the output plugin
-type OutputBuilder func(beatName string, config *common.Config, topologyExpire int) (Outputer, error)
+type OutputBuilder func(beat common.BeatInfo, config *common.Config, topologyExpire int) (Outputer, error)
 
 // Functions to be exported by a output plugin
 type OutputInterface interface {
@@ -72,6 +73,14 @@ type bulkOutputAdapter struct {
 
 var outputsPlugins = make(map[string]OutputBuilder)
 
+var (
+	Metrics = monitoring.Default.NewRegistry("output")
+
+	AckedEvents = monitoring.NewInt(Metrics, "events.acked", monitoring.Report)
+	WriteBytes  = monitoring.NewInt(Metrics, "write.bytes", monitoring.Report)
+	WriteErrors = monitoring.NewInt(Metrics, "write.errors", monitoring.Report)
+)
+
 func RegisterOutputPlugin(name string, builder OutputBuilder) {
 	outputsPlugins[name] = builder
 }
@@ -81,7 +90,7 @@ func FindOutputPlugin(name string) OutputBuilder {
 }
 
 func InitOutputs(
-	beatName string,
+	beat common.BeatInfo,
 	configs map[string]*common.Config,
 	topologyExpire int,
 ) ([]OutputPlugin, error) {
@@ -91,11 +100,13 @@ func InitOutputs(
 		if !exists {
 			continue
 		}
+
+		config.PrintDebugf("Configure output plugin '%v' with:", name)
 		if !config.Enabled() {
 			continue
 		}
 
-		output, err := plugin(beatName, config, topologyExpire)
+		output, err := plugin(beat, config, topologyExpire)
 		if err != nil {
 			logp.Err("failed to initialize %s plugin as output: %s", name, err)
 			return nil, err
@@ -135,4 +146,14 @@ func (b *bulkOutputAdapter) BulkPublish(
 
 func (d *Data) AddValue(key, value interface{}) {
 	d.Values = d.Values.Append(key, value)
+}
+
+type EventEncoder interface {
+	// Encode event
+	Encode(event common.MapStr, options interface{}) ([]byte, error)
+}
+
+type EventFormatter interface {
+	// Format event
+	Format(event common.MapStr, format string) ([]byte, error)
 }
