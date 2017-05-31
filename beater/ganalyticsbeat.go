@@ -168,7 +168,7 @@ func (bt *Ganalyticsbeat) Run(b *beat.Beat) error {
 					}
 				} else if bt.config.AnalyticType == "realtime" {
 					logp.Info("Running Realtime data analytics")
-					err := bt.DownloadRealtimeAndPublish()
+					err := bt.DownloadRealtimeAndPublish(time.Now())
 					if err != nil {
 						fails++
 						if dropoff < MAX_RETRIES {
@@ -273,7 +273,7 @@ func (bt *Ganalyticsbeat) DownloadAndPublish(timeNow int, timeStart int, timeEnd
 	}
 }
 
-func (bt *Ganalyticsbeat) DownloadRealtimeAndPublish() error {
+func (bt *Ganalyticsbeat) DownloadRealtimeAndPublish(currentTime time.Time) error {
 	// realtimerequest := &analytics.RealtimeDataQuery{
 	// 	Ids:     bt.config.RealTime.ViewId,
 	// 	Metrics: bt.config.RealTime.Metrics
@@ -296,7 +296,7 @@ func (bt *Ganalyticsbeat) DownloadRealtimeAndPublish() error {
 		logp.Err("Exception from ga realtime API %v", err)
 		return nil
 	}
-	bt.processRealtime(res)
+	bt.processRealtime(res, currentTime)
 	return nil
 }
 
@@ -337,7 +337,7 @@ func (bt *Ganalyticsbeat) fetchRequest(requests *analyticsreporting.GetReportsRe
 	return nil
 
 }
-func (bt *Ganalyticsbeat) processRealtime(response *analytics.RealtimeData) error {
+func (bt *Ganalyticsbeat) processRealtime(response *analytics.RealtimeData, currentTime time.Time) error {
 	var cont int
 	cont = 0
 	loc, err := time.LoadLocation(bt.config.Reports.ViewTimeZone)
@@ -359,7 +359,7 @@ func (bt *Ganalyticsbeat) processRealtime(response *analytics.RealtimeData) erro
 		key := bt.getRealtimeKey(ts, headers, rows[i])
 		indexname, _ := bt.beat.Config.Output["logstash"].String("index", 0)
 		event := common.MapStr{
-			"@timestamp": common.Time(ts),
+			"@timestamp": common.Time(currentTime),
 			"key":        key,
 			"indexname":  indexname,
 		}
